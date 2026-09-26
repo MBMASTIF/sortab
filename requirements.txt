@@ -1,4 +1,4 @@
-polars>=1.44
+polars[excel]>=1.44
 python-calamine>=0.8
 rapidfuzz>=3.14
 charset-normalizer>=3.4
