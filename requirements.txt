@@ -1,0 +1,8 @@
+polars>=1.44
+python-calamine>=0.8
+rapidfuzz>=3.14
+charset-normalizer>=3.4
+pdfplumber>=0.11
+camelot-py[base]>=2.0
+fastapi
+pytest>=9.1
