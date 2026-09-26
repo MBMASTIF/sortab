@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>gruper — наведи порядок в грязных таблицах</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #FAFAF8;
+    --paper-raised: #F2F3EF;
+    --ink: #1A2233;
+    --ink-soft: #5B6472;
+    --stamp: #E8543D;
+    --stamp-dark: #CC4530;
+    --ledger-line: #16A76B;
+    --rule: #E2E4DE;
+    --rule-light: #EDEEE9;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: 'IBM Plex Sans', sans-serif;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .mono { font-family: 'IBM Plex Mono', monospace; }
+
+  header {
+    padding: 20px 40px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    position: sticky;
+    top: 0;
+    background: rgba(250, 250, 248, 0.88);
+    backdrop-filter: blur(10px);
+    z-index: 10;
+  }
+
+  .logo {
+    font-weight: 700;
+    font-size: 21px;
+    letter-spacing: -0.01em;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+  .logo-mark {
+    width: 26px;
+    height: 26px;
+    border-radius: 8px;
+    background: linear-gradient(135deg, var(--ledger-line), #0E8058);
+    display: inline-block;
+  }
+
+  nav { display: flex; align-items: center; }
+  nav a {
+    color: var(--ink-soft);
+    text-decoration: none;
+    margin-left: 32px;
+    font-size: 15px;
+    transition: color 0.15s ease;
+  }
+  nav a:hover { color: var(--ink); }
+
+  .btn-primary {
+    background: linear-gradient(135deg, var(--stamp), var(--stamp-dark));
+    color: #fff;
+    border: none;
+    padding: 12px 24px;
+    font-size: 15px;
+    font-weight: 600;
+    border-radius: 10px;
+    cursor: pointer;
+    font-family: inherit;
+    margin-left: 32px;
+    box-shadow: 0 4px 14px rgba(232, 84, 61, 0.28);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+  .btn-primary:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 18px rgba(232, 84, 61, 0.36);
+  }
+
+  main { max-width: 1140px; margin: 0 auto; padding: 0 40px; }
+
+  .hero {
+    padding: 88px 0 56px;
+    text-align: center;
+  }
+
+  .hero-heading {
+    font-size: 52px;
+    font-weight: 700;
+    letter-spacing: -0.025em;
+    line-height: 1.12;
+    max-width: 780px;
+    margin: 0 auto 20px;
+  }
+
+  .hero-sub {
+    font-size: 19px;
+    color: var(--ink-soft);
+    max-width: 600px;
+    margin: 0 auto 28px;
+  }
+
+  .hero-instruction {
+    font-size: 15px;
+    color: var(--ledger-line);
+    font-weight: 600;
+    margin-bottom: 40px;
+  }
+
+  /* --- Interactive demo --- */
+  .demo {
+    display: grid;
+    grid-template-columns: 260px 1fr;
+    gap: 0;
+    border-radius: 20px;
+    background: #fff;
+    box-shadow: 0 2px 8px rgba(26, 34, 51, 0.04), 0 20px 48px rgba(26, 34, 51, 0.09);
+    overflow: hidden;
+    text-align: left;
+  }
+
+  .demo-pool {
+    padding: 24px;
+    background: var(--paper-raised);
+    border-right: 1px solid var(--rule);
+  }
+
+  .demo-pool-label {
+    font-size: 13px;
+    color: var(--ink-soft);
+    margin-bottom: 14px;
+    font-weight: 500;
+  }
+
+  .item-card {
+    background: #fff;
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    padding: 11px 14px;
+    margin-bottom: 8px;
+    cursor: grab;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 14px;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+  .item-card:active { cursor: grabbing; }
+  .item-card.dragging { opacity: 0.4; }
+  .item-card:hover {
+    box-shadow: 0 6px 16px rgba(26, 34, 51, 0.1);
+    transform: translateY(-2px);
+  }
+  .item-card .val { color: var(--stamp); font-weight: 600; }
+
+  .demo-zones {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .zone {
+    padding: 24px;
+    border-right: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+    min-height: 220px;
+    transition: background 0.15s ease;
+  }
+  .zone:nth-child(2) { border-right: none; }
+  .zone.drag-over { background: rgba(22, 167, 107, 0.06); }
+
+  .zone-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    border-bottom: 2px solid var(--ledger-line);
+    padding-bottom: 10px;
+    margin-bottom: 14px;
+  }
+  .zone-name { font-weight: 600; font-size: 15px; }
+  .zone-total { font-size: 15px; color: var(--ledger-line); font-weight: 600; }
+
+  .zone-drop-hint {
+    font-size: 13px;
+    color: #A6A196;
+    padding: 8px 0;
+  }
+
+  .zone .item-card { cursor: default; }
+
+  .unassigned-row {
+    grid-column: 1 / -1;
+    padding: 16px 24px;
+    display: flex;
+    justify-content: space-between;
+    background: var(--paper-raised);
+    border-top: 1px solid var(--rule);
+    font-size: 14px;
+    font-weight: 500;
+  }
+  .unassigned-row .val { font-weight: 700; color: var(--stamp); }
+  .unassigned-row.zero .val { color: var(--ledger-line); }
+
+  /* --- How it works --- */
+  .steps { padding: 96px 0; }
+  .steps h2 {
+    font-size: 32px;
+    letter-spacing: -0.01em;
+    margin-bottom: 40px;
+    text-align: center;
+  }
+  .step-list {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 20px;
+  }
+  .step {
+    background: #fff;
+    border: 1px solid var(--rule);
+    border-radius: 16px;
+    padding: 24px 20px;
+    box-shadow: 0 2px 6px rgba(26, 34, 51, 0.03);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+  .step:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 10px 24px rgba(26, 34, 51, 0.07);
+  }
+  .step-num {
+    font-family: 'IBM Plex Mono', monospace;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    border-radius: 9px;
+    background: var(--paper-raised);
+    color: var(--ledger-line);
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 14px;
+  }
+  .step h3 { font-size: 16px; margin-bottom: 8px; }
+  .step p { font-size: 14px; color: var(--ink-soft); line-height: 1.55; }
+
+  /* --- Pricing --- */
+  .pricing { padding: 40px 0 100px; }
+  .pricing h2 { font-size: 32px; letter-spacing: -0.01em; margin-bottom: 8px; text-align: center; }
+  .pricing-sub { color: var(--ink-soft); margin-bottom: 40px; font-size: 16px; text-align: center; }
+
+  .price-cards {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    max-width: 760px;
+    margin: 0 auto;
+  }
+  .price-card {
+    background: #fff;
+    border: 1px solid var(--rule);
+    border-radius: 20px;
+    padding: 32px;
+    box-shadow: 0 2px 8px rgba(26, 34, 51, 0.04);
+  }
+  .price-card.featured {
+    border: 2px solid var(--ledger-line);
+    box-shadow: 0 12px 32px rgba(22, 167, 107, 0.14);
+    position: relative;
+  }
+  .price-card .badge {
+    position: absolute;
+    top: -12px;
+    right: 28px;
+    background: var(--ledger-line);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 5px 12px;
+    border-radius: 20px;
+  }
+  .price-card h3 { font-size: 18px; margin-bottom: 4px; }
+  .price-card .price {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 34px;
+    font-weight: 600;
+    margin: 16px 0 20px;
+  }
+  .price-card .price span { font-size: 15px; color: var(--ink-soft); font-weight: 400; }
+  .price-card ul { list-style: none; }
+  .price-card li {
+    font-size: 14px;
+    padding: 9px 0;
+    border-top: 1px solid var(--rule-light);
+    display: flex;
+    justify-content: space-between;
+    color: var(--ink-soft);
+  }
+  .price-card li:first-child { border-top: none; }
+  .price-card li .check { color: var(--ledger-line); font-weight: 700; }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    padding: 32px 40px;
+    font-size: 13px;
+    color: var(--ink-soft);
+    text-align: center;
+  }
+
+  @media (max-width: 720px) {
+    .hero-heading { font-size: 32px; }
+    .demo { grid-template-columns: 1fr; border-radius: 16px; }
+    .demo-pool { border-right: none; border-bottom: 1px solid var(--rule); }
+    .demo-zones { grid-template-columns: 1fr; }
+    .step-list { grid-template-columns: 1fr; }
+    .price-cards { grid-template-columns: 1fr; }
+    .price-card li { flex-direction: column; align-items: flex-start; gap: 2px; }
+    .price-card li span:last-child { font-weight: 600; color: var(--ink); }
+    nav a { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo"><span class="logo-mark"></span>gruper</div>
+  <nav>
+    <a href="#steps">Как это работает</a>
+    <a href="#pricing">Тарифы</a>
+    <button class="btn-primary">Загрузить файл</button>
+  </nav>
+</header>
+
+<main>
+  <section class="hero">
+    <h1 class="hero-heading">Грязная таблица без категорий? Разложите её руками за пару минут — программа запомнит навсегда.</h1>
+    <p class="hero-sub">Загружаете отчёт из 1С, Wildberries или банка — перетаскиваете товары и клиентов по своим папкам. Никакого ИИ, который угадывает неправильно — только то, что решили вы.</p>
+    <p class="hero-instruction">↓ Попробуйте прямо здесь — перетащите карточки в нужную папку</p>
+
+    <div class="demo">
+      <div class="demo-pool" id="pool">
+        <div class="demo-pool-label">Из файла (не разобрано)</div>
+      </div>
+      <div class="demo-zones">
+        <div class="zone" data-zone="clothes">
+          <div class="zone-header">
+            <span class="zone-name">Одежда</span>
+            <span class="zone-total mono" data-total="clothes">0 ₽</span>
+          </div>
+          <div class="zone-drop-hint">перетащите сюда</div>
+        </div>
+        <div class="zone" data-zone="shoes">
+          <div class="zone-header">
+            <span class="zone-name">Обувь</span>
+            <span class="zone-total mono" data-total="shoes">0 ₽</span>
+          </div>
+          <div class="zone-drop-hint">перетащите сюда</div>
+        </div>
+        <div class="unassigned-row" id="unassignedRow">
+          <span>Не распределено</span>
+          <span class="val mono" id="unassignedVal">2 340 ₽</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="steps" id="steps">
+    <h2>Как это работает</h2>
+    <div class="step-list">
+      <div class="step">
+        <div class="step-num mono">01</div>
+        <h3>Загрузите файл</h3>
+        <p>Excel, CSV или PDF-накладная — без разницы. Ничего не сохраняем на сервере, если не попросите.</p>
+      </div>
+      <div class="step">
+        <div class="step-num mono">02</div>
+        <h3>Создайте папки</h3>
+        <p>Категории и подкатегории — сколько угодно уровней, под ваш бизнес.</p>
+      </div>
+      <div class="step">
+        <div class="step-num mono">03</div>
+        <h3>Разложите товары</h3>
+        <p>Вручную, галочками и перетаскиванием. Ни одного автоматического решения без вас.</p>
+      </div>
+      <div class="step">
+        <div class="step-num mono">04</div>
+        <h3>Скачайте результат</h3>
+        <p>В следующий раз новый файл разложится сам — по вашим же правилам.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="pricing" id="pricing">
+    <h2>Тарифы</h2>
+    <p class="pricing-sub">Все возможности доступны на любом тарифе. Разница — только в лимитах.</p>
+    <div class="price-cards">
+      <div class="price-card">
+        <h3>Бесплатно</h3>
+        <div class="price">0 ₽</div>
+        <ul>
+          <li><span>Сохранённые проекты</span><span>1</span></li>
+          <li><span>Размер файла</span><span>до 20 МБ</span></li>
+          <li><span>PDF-страниц в месяц</span><span>10</span></li>
+          <li><span>Группировка, сверка, PDF, Mail Merge</span><span class="check">✓</span></li>
+        </ul>
+      </div>
+      <div class="price-card featured">
+        <span class="badge">Популярный</span>
+        <h3>Профи</h3>
+        <div class="price">990 ₽<span>/мес</span></div>
+        <ul>
+          <li><span>Сохранённые проекты</span><span>без ограничений</span></li>
+          <li><span>Размер файла</span><span>до 100 МБ</span></li>
+          <li><span>PDF-страниц в месяц</span><span>200</span></li>
+          <li><span>Группировка, сверка, PDF, Mail Merge</span><span class="check">✓</span></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  gruper — рабочее название проекта. Ваши файлы не хранятся на сервере.
+</footer>
+
+<script>
+  const items = [
+    { id: 'i1', name: 'Носки чёрн. 42', value: 450, group: null },
+    { id: 'i2', name: 'Ботинки зимние', value: 3200, group: null },
+    { id: 'i3', name: 'Шапка вязаная', value: 890, group: null },
+    { id: 'i4', name: 'Кроссовки бел.', value: 2600, group: null },
+    { id: 'i5', name: 'Носки бел. 40', value: 400, group: null },
+  ];
+
+  const pool = document.getElementById('pool');
+  const unassignedVal = document.getElementById('unassignedVal');
+  const unassignedRow = document.getElementById('unassignedRow');
+
+  function fmt(n) {
+    return n.toLocaleString('ru-RU') + ' ₽';
+  }
+
+  function render() {
+    pool.querySelectorAll('.item-card').forEach(el => el.remove());
+    items.filter(i => i.group === null).forEach(item => {
+      pool.appendChild(makeCard(item));
+    });
+
+    ['clothes', 'shoes'].forEach(zoneId => {
+      const zoneEl = document.querySelector(`.zone[data-zone="${zoneId}"]`);
+      zoneEl.querySelectorAll('.item-card').forEach(el => el.remove());
+      const hint = zoneEl.querySelector('.zone-drop-hint');
+      const zoneItems = items.filter(i => i.group === zoneId);
+      hint.style.display = zoneItems.length ? 'none' : 'block';
+      zoneItems.forEach(item => zoneEl.appendChild(makeCard(item, true)));
+      const total = zoneItems.reduce((sum, i) => sum + i.value, 0);
+      document.querySelector(`[data-total="${zoneId}"]`).textContent = fmt(total);
+    });
+
+    const unassignedTotal = items.filter(i => i.group === null).reduce((s, i) => s + i.value, 0);
+    unassignedVal.textContent = fmt(unassignedTotal);
+    unassignedRow.classList.toggle('zero', unassignedTotal === 0);
+  }
+
+  function makeCard(item, placed) {
+    const el = document.createElement('div');
+    el.className = 'item-card';
+    el.draggable = true;
+    el.dataset.id = item.id;
+    el.innerHTML = `<span>${item.name}</span><span class="val mono">${fmt(item.value)}</span>`;
+    el.addEventListener('dragstart', e => {
+      e.dataTransfer.setData('text/plain', item.id);
+      el.classList.add('dragging');
+    });
+    el.addEventListener('dragend', () => el.classList.remove('dragging'));
+    return el;
+  }
+
+  document.querySelectorAll('.zone').forEach(zoneEl => {
+    zoneEl.addEventListener('dragover', e => {
+      e.preventDefault();
+      zoneEl.classList.add('drag-over');
+    });
+    zoneEl.addEventListener('dragleave', () => zoneEl.classList.remove('drag-over'));
+    zoneEl.addEventListener('drop', e => {
+      e.preventDefault();
+      zoneEl.classList.remove('drag-over');
+      const id = e.dataTransfer.getData('text/plain');
+      const item = items.find(i => i.id === id);
+      if (item) {
+        item.group = zoneEl.dataset.zone;
+        render();
+      }
+    });
+  });
+
+  pool.addEventListener('dragover', e => e.preventDefault());
+  pool.addEventListener('drop', e => {
+    e.preventDefault();
+    const id = e.dataTransfer.getData('text/plain');
+    const item = items.find(i => i.id === id);
+    if (item) {
+      item.group = null;
+      render();
+    }
+  });
+
+  render();
+</script>
+
+</body>
+</html>
