@@ -260,17 +260,23 @@
 
   .price-cards {
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 24px;
-    max-width: 760px;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 20px;
+    max-width: 1120px;
     margin: 0 auto;
+    align-items: start;
   }
   .price-card {
     background: #fff;
     border: 1px solid var(--rule);
     border-radius: 20px;
-    padding: 32px;
+    padding: 26px 22px;
     box-shadow: 0 2px 8px rgba(26, 34, 51, 0.04);
+  }
+  .price-card .tagline {
+    font-size: 13px;
+    color: var(--ink-soft);
+    margin-bottom: 2px;
   }
   .price-card.featured {
     border: 2px solid var(--ledger-line);
@@ -404,24 +410,52 @@
     <p class="pricing-sub">Все возможности доступны на любом тарифе. Разница — только в лимитах.</p>
     <div class="price-cards">
       <div class="price-card">
+        <p class="tagline">Разовая задача</p>
         <h3>Бесплатно</h3>
         <div class="price">0 ₽</div>
         <ul>
-          <li><span>Сохранённые проекты</span><span>1</span></li>
-          <li><span>Размер файла</span><span>до 20 МБ</span></li>
-          <li><span>PDF-страниц в месяц</span><span>10</span></li>
-          <li><span>Группировка, сверка, PDF, Mail Merge</span><span class="check">✓</span></li>
+          <li><span>Пользователей</span><span>1</span></li>
+          <li><span>Проектов</span><span>1</span></li>
+          <li><span>Файл до</span><span>20 МБ</span></li>
+          <li><span>PDF/мес</span><span>10 стр.</span></li>
+          <li><span>API</span><span>—</span></li>
         </ul>
       </div>
       <div class="price-card featured">
         <span class="badge">Популярный</span>
+        <p class="tagline">Регулярная работа</p>
         <h3>Профи</h3>
         <div class="price">990 ₽<span>/мес</span></div>
         <ul>
-          <li><span>Сохранённые проекты</span><span>без ограничений</span></li>
-          <li><span>Размер файла</span><span>до 100 МБ</span></li>
-          <li><span>PDF-страниц в месяц</span><span>200</span></li>
-          <li><span>Группировка, сверка, PDF, Mail Merge</span><span class="check">✓</span></li>
+          <li><span>Пользователей</span><span>1</span></li>
+          <li><span>Проектов</span><span>без огр.</span></li>
+          <li><span>Файл до</span><span>100 МБ</span></li>
+          <li><span>PDF/мес</span><span>200 стр.</span></li>
+          <li><span>API</span><span>—</span></li>
+        </ul>
+      </div>
+      <div class="price-card">
+        <p class="tagline">Команда</p>
+        <h3>Бизнес</h3>
+        <div class="price">2 990 ₽<span>/мес</span></div>
+        <ul>
+          <li><span>Пользователей</span><span>до 5</span></li>
+          <li><span>Проектов</span><span>без огр.</span></li>
+          <li><span>Файл до</span><span>100 МБ</span></li>
+          <li><span>PDF/мес</span><span>500 стр.</span></li>
+          <li><span>API</span><span>—</span></li>
+        </ul>
+      </div>
+      <div class="price-card">
+        <p class="tagline">Агентства и автоматизация</p>
+        <h3>Корпоративный</h3>
+        <div class="price">7 990 ₽<span>/мес</span></div>
+        <ul>
+          <li><span>Пользователей</span><span>до 20</span></li>
+          <li><span>Проектов</span><span>без огр.</span></li>
+          <li><span>Файл до</span><span>500 МБ</span></li>
+          <li><span>PDF/мес</span><span>без огр.</span></li>
+          <li><span>API</span><span class="check">✓</span></li>
         </ul>
       </div>
     </div>
