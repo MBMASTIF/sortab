@@ -7,5 +7,7 @@ camelot-py[base]>=2.0
 fastapi
 redis
 rq
+openpyxl
+xlsxwriter
 pytest>=9.1
 fakeredis  # dev/test only
