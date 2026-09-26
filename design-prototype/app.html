@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>gruper — рабочий экран</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #FAFAF8;
+    --paper-raised: #F2F3EF;
+    --ink: #1A2233;
+    --ink-soft: #5B6472;
+    --stamp: #E8543D;
+    --stamp-dark: #CC4530;
+    --ledger-line: #16A76B;
+    --rule: #E2E4DE;
+    --rule-light: #EDEEE9;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: 'IBM Plex Sans', sans-serif;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono { font-family: 'IBM Plex Mono', monospace; }
+
+  header {
+    padding: 16px 32px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--rule);
+    background: #fff;
+  }
+  .logo { font-weight: 700; font-size: 18px; display: flex; align-items: center; gap: 8px; }
+  .logo-mark { width: 22px; height: 22px; border-radius: 7px; background: linear-gradient(135deg, var(--ledger-line), #0E8058); display: inline-block; }
+  .project-name { color: var(--ink-soft); font-size: 14px; }
+  .project-name::before { content: "/"; margin-right: 12px; color: var(--rule); }
+
+  .workspace {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 28px 32px 120px;
+  }
+
+  .toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+  }
+  .toolbar h1 { font-size: 22px; font-weight: 700; }
+  .toolbar .hint { font-size: 14px; color: var(--ink-soft); }
+
+  .panels {
+    display: grid;
+    grid-template-columns: 380px 1fr;
+    gap: 20px;
+  }
+
+  .panel {
+    background: #fff;
+    border: 1px solid var(--rule);
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: 0 2px 8px rgba(26, 34, 51, 0.04);
+  }
+  .panel-head {
+    padding: 16px 18px;
+    border-bottom: 1px solid var(--rule);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .panel-title { font-weight: 600; font-size: 15px; display: flex; justify-content: space-between; }
+  .panel-title .count { color: var(--ink-soft); font-weight: 400; font-size: 13px; }
+
+  .search-box {
+    width: 100%;
+    padding: 9px 12px;
+    border: 1px solid var(--rule);
+    border-radius: 9px;
+    font-family: inherit;
+    font-size: 14px;
+    background: var(--paper-raised);
+  }
+  .search-box:focus { outline: 2px solid var(--ledger-line); outline-offset: -1px; background: #fff; }
+
+  .entity-list { max-height: 480px; overflow-y: auto; padding: 8px; }
+  .entity-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 10px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 14px;
+  }
+  .entity-row:hover { background: var(--paper-raised); }
+  .entity-row.assigned { opacity: 0.4; }
+  .entity-row input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--ledger-line); cursor: pointer; }
+  .entity-name { flex: 1; }
+  .entity-meta { font-size: 12px; color: var(--ink-soft); }
+  .entity-badge-new {
+    background: var(--stamp);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 6px;
+  }
+  .empty-state { padding: 40px 16px; text-align: center; color: var(--ink-soft); font-size: 14px; }
+
+  .tree-toolbar { padding: 14px 18px; border-bottom: 1px solid var(--rule); display: flex; gap: 8px; }
+  .btn-ghost {
+    background: var(--paper-raised);
+    border: 1px solid var(--rule);
+    color: var(--ink);
+    padding: 8px 14px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .btn-ghost:hover { background: #fff; border-color: var(--ledger-line); }
+
+  .tree { padding: 12px 18px; min-height: 420px; }
+  .tree-node { margin-bottom: 4px; }
+  .tree-node-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 10px;
+    border-radius: 8px;
+    font-size: 14px;
+  }
+  .tree-node-row:hover { background: var(--paper-raised); }
+  .tree-node-row.drop-target { outline: 2px dashed var(--ledger-line); outline-offset: -2px; background: rgba(22,167,107,0.06); }
+  .tree-node-row.not-leaf { color: var(--ink-soft); }
+  .tree-label { display: flex; align-items: center; gap: 8px; }
+  .tree-toggle { width: 16px; text-align: center; color: var(--ink-soft); font-size: 11px; }
+  .tree-total { font-size: 13px; color: var(--ledger-line); font-weight: 600; }
+  .tree-actions { display: flex; gap: 6px; }
+  .icon-btn {
+    background: none; border: none; color: var(--ink-soft); cursor: pointer;
+    font-size: 12px; padding: 4px 8px; border-radius: 6px; font-family: inherit;
+  }
+  .icon-btn:hover { background: var(--rule-light); color: var(--ink); }
+  .tree-children { margin-left: 22px; border-left: 1px solid var(--rule); padding-left: 4px; }
+
+  .add-form {
+    display: flex;
+    gap: 6px;
+    margin: 6px 0 6px 22px;
+  }
+  .add-form input {
+    flex: 1;
+    padding: 7px 10px;
+    border: 1px solid var(--ledger-line);
+    border-radius: 7px;
+    font-size: 13px;
+    font-family: inherit;
+  }
+  .add-form button {
+    background: var(--ledger-line);
+    color: #fff;
+    border: none;
+    border-radius: 7px;
+    padding: 7px 12px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  /* Bulk action bar */
+  .bulk-bar {
+    position: fixed;
+    left: 50%;
+    bottom: 24px;
+    transform: translate(-50%, 120%);
+    background: var(--ink);
+    color: #fff;
+    padding: 14px 16px;
+    border-radius: 14px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    box-shadow: 0 12px 32px rgba(0,0,0,0.25);
+    transition: transform 0.2s ease;
+    z-index: 20;
+  }
+  .bulk-bar.visible { transform: translate(-50%, 0); }
+  .bulk-bar .count { font-weight: 600; font-size: 14px; }
+  .bulk-bar select {
+    background: rgba(255,255,255,0.1);
+    color: #fff;
+    border: 1px solid rgba(255,255,255,0.25);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-family: inherit;
+    font-size: 13px;
+  }
+  .bulk-bar button.send {
+    background: var(--ledger-line);
+    border: none;
+    color: #fff;
+    padding: 9px 16px;
+    border-radius: 8px;
+    font-weight: 600;
+    font-size: 13px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .bulk-bar button.send:disabled { background: #4A5568; cursor: not-allowed; opacity: 0.6; }
+  .bulk-bar button.clear { background: none; border: none; color: rgba(255,255,255,0.7); cursor: pointer; font-size: 13px; }
+
+  /* Reconciliation footer */
+  .reconcile-bar {
+    position: fixed;
+    bottom: 0; left: 0; right: 0;
+    background: #fff;
+    border-top: 1px solid var(--rule);
+    padding: 14px 32px;
+    display: flex;
+    justify-content: center;
+    gap: 48px;
+    box-shadow: 0 -4px 16px rgba(26,34,51,0.05);
+    z-index: 10;
+  }
+  .reconcile-item { text-align: center; }
+  .reconcile-label { font-size: 12px; color: var(--ink-soft); margin-bottom: 2px; }
+  .reconcile-value { font-size: 17px; font-weight: 600; }
+  .reconcile-value.unassigned { color: var(--stamp); }
+  .reconcile-value.unassigned.zero { color: var(--ledger-line); }
+
+  @media (max-width: 860px) {
+    .panels { grid-template-columns: 1fr; }
+    .reconcile-bar { gap: 20px; padding: 12px 16px; }
+    .reconcile-value { font-size: 15px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo"><span class="logo-mark"></span>gruper</div>
+  <div class="project-name">Продажи маркетплейса — черновик</div>
+</header>
+
+<div class="workspace">
+  <div class="toolbar">
+    <h1>Разберите колонку «Товар»</h1>
+    <span class="hint">Отметьте значения слева и отправьте в нужную категорию справа</span>
+  </div>
+
+  <div class="panels">
+    <div class="panel">
+      <div class="panel-head">
+        <div class="panel-title">
+          <span>Нераспределённые</span>
+          <span class="count" id="unassignedCount">0</span>
+        </div>
+        <input type="text" class="search-box" id="searchBox" placeholder="Поиск по названию…">
+      </div>
+      <div class="entity-list" id="entityList"></div>
+    </div>
+
+    <div class="panel">
+      <div class="tree-toolbar">
+        <button class="btn-ghost" id="addRootBtn">+ Новая категория</button>
+      </div>
+      <div class="tree" id="treeContainer"></div>
+    </div>
+  </div>
+</div>
+
+<div class="bulk-bar" id="bulkBar">
+  <span class="count mono" id="bulkCount">Выбрано: 0</span>
+  <select id="bulkTarget"><option value="">Выберите категорию…</option></select>
+  <button class="send" id="bulkSend" disabled>Отправить</button>
+  <button class="clear" id="bulkClear">Снять выбор</button>
+</div>
+
+<div class="reconcile-bar">
+  <div class="reconcile-item">
+    <div class="reconcile-label">Итого по файлу</div>
+    <div class="reconcile-value mono" id="totalFile">0 ₽</div>
+  </div>
+  <div class="reconcile-item">
+    <div class="reconcile-label">По группам</div>
+    <div class="reconcile-value mono" id="totalGroups">0 ₽</div>
+  </div>
+  <div class="reconcile-item">
+    <div class="reconcile-label">Не распределено</div>
+    <div class="reconcile-value mono unassigned" id="totalUnassigned">0 ₽</div>
+  </div>
+</div>
+
+<script>
+  // --- Mock data: simulates rows already parsed from an uploaded file ---
+  const rawEntities = [
+    { id: 'e1', name: 'носки чёрные 42', value: 4500, group: null },
+    { id: 'e2', name: 'носки чёрные', value: 1200, group: null },
+    { id: 'e3', name: 'ботинки зимние жен.', value: 32000, group: null },
+    { id: 'e4', name: 'шапка вязаная бел.', value: 8900, group: null },
+    { id: 'e5', name: 'кроссовки бел. 40', value: 26000, group: null },
+    { id: 'e6', name: 'трусы муж. XL', value: 3400, group: null },
+    { id: 'e7', name: 'бельё термо комплект', value: 15600, group: null },
+    { id: 'e8', name: 'сандалии дет.', value: 9800, group: null },
+    { id: 'e9', name: 'перчатки кожаные', value: 7200, group: null },
+    { id: 'e10', name: 'шарф шерстяной', value: 5100, group: null },
+  ];
+
+  let groups = {}; // id -> {id, name, parentId}
+  let nextGroupId = 1;
+
+  function addGroup(name, parentId) {
+    const id = 'g' + (nextGroupId++);
+    groups[id] = { id, name, parentId };
+    return id;
+  }
+
+  function isLeaf(groupId) {
+    return !Object.values(groups).some(g => g.parentId === groupId);
+  }
+
+  function children(parentId) {
+    return Object.values(groups).filter(g => g.parentId === parentId);
+  }
+
+  function groupPath(groupId) {
+    const path = [];
+    let cur = groupId;
+    while (cur) {
+      path.unshift(groups[cur].name);
+      cur = groups[cur].parentId;
+    }
+    return path;
+  }
+
+  function fmt(n) { return n.toLocaleString('ru-RU') + ' ₽'; }
+
+  let selected = new Set();
+
+  function render() {
+    renderEntityList();
+    renderTree();
+    renderBulkBar();
+    renderReconciliation();
+  }
+
+  function renderEntityList() {
+    const search = document.getElementById('searchBox').value.trim().toLowerCase();
+    const list = document.getElementById('entityList');
+    list.innerHTML = '';
+    const unassigned = rawEntities.filter(e => e.group === null);
+    document.getElementById('unassignedCount').textContent = unassigned.length;
+
+    const filtered = unassigned.filter(e => e.name.includes(search));
+    if (filtered.length === 0) {
+      list.innerHTML = `<div class="empty-state">${unassigned.length === 0 ? 'Все значения распределены' : 'Ничего не найдено'}</div>`;
+      return;
+    }
+    filtered.forEach(e => {
+      const row = document.createElement('label');
+      row.className = 'entity-row';
+      row.innerHTML = `
+        <input type="checkbox" data-id="${e.id}" ${selected.has(e.id) ? 'checked' : ''}>
+        <span class="entity-name">${e.name}</span>
+        <span class="entity-meta mono">${fmt(e.value)}</span>
+      `;
+      row.querySelector('input').addEventListener('change', ev => {
+        if (ev.target.checked) selected.add(e.id); else selected.delete(e.id);
+        renderBulkBar();
+      });
+      list.appendChild(row);
+    });
+  }
+
+  function groupTotal(groupId) {
+    let total = rawEntities.filter(e => e.group === groupId).reduce((s, e) => s + e.value, 0);
+    children(groupId).forEach(c => { total += groupTotal(c.id); });
+    return total;
+  }
+
+  function renderTree() {
+    const container = document.getElementById('treeContainer');
+    container.innerHTML = '';
+    const roots = children(null);
+    if (roots.length === 0) {
+      container.innerHTML = '<div class="empty-state">Создайте первую категорию</div>';
+    }
+    roots.forEach(g => container.appendChild(renderNode(g)));
+
+    // rebuild bulk-target dropdown with only leaf groups
+    const select = document.getElementById('bulkTarget');
+    const currentVal = select.value;
+    select.innerHTML = '<option value="">Выберите категорию…</option>';
+    Object.values(groups).filter(g => isLeaf(g.id)).forEach(g => {
+      const opt = document.createElement('option');
+      opt.value = g.id;
+      opt.textContent = groupPath(g.id).join(' / ');
+      select.appendChild(opt);
+    });
+    select.value = currentVal;
+  }
+
+  function renderNode(g) {
+    const wrap = document.createElement('div');
+    wrap.className = 'tree-node';
+
+    const row = document.createElement('div');
+    row.className = 'tree-node-row' + (isLeaf(g.id) ? '' : ' not-leaf');
+    row.dataset.groupId = g.id;
+    row.innerHTML = `
+      <span class="tree-label">${g.name}</span>
+      <span class="tree-actions">
+        <span class="tree-total mono">${fmt(groupTotal(g.id))}</span>
+        <button class="icon-btn" data-action="add-sub" data-id="${g.id}">+ подкатегория</button>
+        <button class="icon-btn" data-action="delete" data-id="${g.id}">удалить</button>
+      </span>
+    `;
+    wrap.appendChild(row);
+
+    const childWrap = document.createElement('div');
+    childWrap.className = 'tree-children';
+    children(g.id).forEach(c => childWrap.appendChild(renderNode(c)));
+    if (children(g.id).length > 0) wrap.appendChild(childWrap);
+
+    return wrap;
+  }
+
+  function renderBulkBar() {
+    const bar = document.getElementById('bulkBar');
+    const count = selected.size;
+    document.getElementById('bulkCount').textContent = `Выбрано: ${count}`;
+    bar.classList.toggle('visible', count > 0);
+    updateSendButtonState();
+  }
+
+  function updateSendButtonState() {
+    const target = document.getElementById('bulkTarget').value;
+    const btn = document.getElementById('bulkSend');
+    btn.disabled = !(selected.size > 0 && target && isLeaf(target));
+  }
+
+  function renderReconciliation() {
+    const total = rawEntities.reduce((s, e) => s + e.value, 0);
+    const unassignedTotal = rawEntities.filter(e => e.group === null).reduce((s, e) => s + e.value, 0);
+    const groupsTotal = total - unassignedTotal;
+
+    document.getElementById('totalFile').textContent = fmt(total);
+    document.getElementById('totalGroups').textContent = fmt(groupsTotal);
+    const unassignedEl = document.getElementById('totalUnassigned');
+    unassignedEl.textContent = fmt(unassignedTotal);
+    unassignedEl.classList.toggle('zero', unassignedTotal === 0);
+  }
+
+  // --- Event wiring ---
+  document.getElementById('searchBox').addEventListener('input', renderEntityList);
+
+  document.getElementById('addRootBtn').addEventListener('click', () => {
+    showAddForm(null, document.getElementById('treeContainer'), true);
+  });
+
+  document.getElementById('treeContainer').addEventListener('click', e => {
+    const btn = e.target.closest('button[data-action]');
+    if (!btn) return;
+    const id = btn.dataset.id;
+    if (btn.dataset.action === 'add-sub') {
+      const row = btn.closest('.tree-node').querySelector('.tree-node-row');
+      showAddForm(id, row, false);
+    } else if (btn.dataset.action === 'delete') {
+      if (children(id).length > 0) { alert('Сначала удалите или перенесите подкатегории'); return; }
+      const hasAssigned = rawEntities.some(en => en.group === id);
+      if (hasAssigned) { alert('В этой категории есть значения — сначала перенесите их'); return; }
+      delete groups[id];
+      render();
+    }
+  });
+
+  function showAddForm(parentId, afterEl, isRoot) {
+    const existing = document.querySelector('.add-form');
+    if (existing) existing.remove();
+    const form = document.createElement('div');
+    form.className = 'add-form';
+    form.innerHTML = `<input type="text" placeholder="Название категории" autofocus><button>Добавить</button>`;
+    if (isRoot) {
+      afterEl.prepend(form);
+    } else {
+      afterEl.insertAdjacentElement('afterend', form);
+    }
+    const input = form.querySelector('input');
+    input.focus();
+    function submit() {
+      const name = input.value.trim();
+      if (name) { addGroup(name, parentId); render(); }
+    }
+    form.querySelector('button').addEventListener('click', submit);
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+  }
+
+  document.getElementById('bulkTarget').addEventListener('change', updateSendButtonState);
+  document.getElementById('bulkClear').addEventListener('click', () => { selected.clear(); render(); });
+  document.getElementById('bulkSend').addEventListener('click', () => {
+    const target = document.getElementById('bulkTarget').value;
+    if (!target || !isLeaf(target)) return;
+    selected.forEach(id => {
+      const entity = rawEntities.find(e => e.id === id);
+      if (entity) entity.group = target;
+    });
+    selected.clear();
+    document.getElementById('bulkTarget').value = '';
+    render();
+  });
+
+  // Seed a couple of starter categories so the demo isn't an empty tree
+  const clothesId = addGroup('Одежда', null);
+  addGroup('Верхняя одежда', clothesId);
+  addGroup('Бельё', clothesId);
+  addGroup('Обувь', null);
+
+  render();
+</script>
+
+</body>
+</html>
