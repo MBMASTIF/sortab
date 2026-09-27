@@ -146,72 +146,160 @@
     display: inline-block;
   }
   .btn-continue.is-disabled { background: #4A5568; cursor: not-allowed; opacity: 0.6; pointer-events: none; }
+
+  /* ---------- Upload zone (shown before a file is chosen) ---------- */
+  .upload-zone {
+    background: #fff;
+    border: 2px dashed var(--rule);
+    border-radius: 16px;
+    padding: 64px 32px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  .upload-zone:hover, .upload-zone.drag-over { border-color: var(--ledger-line); background: rgba(22,167,107,0.04); }
+  .upload-zone .upload-title { font-size: 17px; font-weight: 600; margin-bottom: 6px; }
+  .upload-zone .upload-hint { font-size: 13.5px; color: var(--ink-soft); }
+  .upload-zone .upload-error { margin-top: 14px; font-size: 13.5px; color: var(--stamp-dark); font-weight: 600; }
+  .hidden { display: none !important; }
+  .spinner-line { font-size: 13.5px; color: var(--ink-soft); padding: 24px; text-align: center; }
 </style>
 </head>
 <body>
 
 <header>
   <a class="logo" href="index.html"><span class="logo-mark"></span>gruper</a>
-  <span class="file-name">Продажи_сентябрь.xlsx</span>
+  <span class="file-name" id="fileNameLabel"></span>
 </header>
 
 <div class="workspace">
   <div class="toolbar">
-    <h1>Какие колонки разбирать?</h1>
-    <p class="hint">Кликните по строке, где на самом деле начинаются заголовки — а затем по нужным колонкам ниже</p>
+    <h1 id="pageTitle">Загрузите файл</h1>
+    <p class="hint" id="pageHint">Excel (.xlsx/.xls/.ods) или CSV — разберём колонки на следующем шаге</p>
   </div>
 
-  <div class="pick-row">
-    <div class="pick-chip entity" id="chipEntity">
-      <span class="swatch"></span>
-      <span>Группировать по: <span class="value placeholder" id="chipEntityValue">не выбрано</span></span>
+  <div class="upload-zone" id="uploadZone">
+    <input type="file" id="fileInput" class="hidden" accept=".xlsx,.xls,.xlsm,.xlsb,.ods,.csv,.txt">
+    <div id="uploadIdle">
+      <div class="upload-title">Перетащите файл сюда или нажмите, чтобы выбрать</div>
+      <div class="upload-hint">Поддерживаются Excel и CSV — кодировка и разделитель определятся автоматически</div>
     </div>
-    <div class="pick-chip metric" id="chipMetric">
-      <span class="swatch"></span>
-      <span>Суммировать: <span class="value placeholder" id="chipMetricValue">не выбрано</span></span>
-    </div>
+    <div class="spinner-line hidden" id="uploadSpinner">Загружаем и разбираем файл…</div>
+    <div class="upload-error hidden" id="uploadError"></div>
   </div>
 
-  <div class="preview-card">
-    <div class="preview-scroll">
-      <table class="preview" id="previewTable"></table>
+  <div class="hidden" id="pickWorkspace">
+    <div class="pick-row">
+      <div class="pick-chip entity" id="chipEntity">
+        <span class="swatch"></span>
+        <span>Группировать по: <span class="value placeholder" id="chipEntityValue">не выбрано</span></span>
+      </div>
+      <div class="pick-chip metric" id="chipMetric">
+        <span class="swatch"></span>
+        <span>Суммировать: <span class="value placeholder" id="chipMetricValue">не выбрано</span></span>
+      </div>
     </div>
-    <div class="table-hint">Показаны первые 8 строк файла — остальные 3 412 разберутся так же, по этому образцу</div>
+
+    <div class="preview-card">
+      <div class="preview-scroll">
+        <table class="preview" id="previewTable"></table>
+      </div>
+      <div class="table-hint" id="tableHint"></div>
+    </div>
   </div>
 </div>
 
-<div class="continue-bar">
+<div class="continue-bar hidden" id="continueBar">
   <span class="status" id="continueStatus">Выберите обе колонки</span>
-  <a class="btn-continue" id="continueBtn" href="app.html">Продолжить</a>
+  <button class="btn-continue is-disabled" id="continueBtn">Продолжить</button>
 </div>
 
 <script>
-  // Mock raw sheet exactly as it would arrive from parse_file() — including
-  // a decorative report-title row before the real header, a very real
-  // pattern in 1C/WB exports that a blind "row 1 = header" assumption would
-  // parse as data.
-  const rawRows = [
-    ['Отчёт по продажам — сентябрь 2026', '', '', '', ''],
-    ['Артикул', 'Товар', 'Кол-во', 'Цена', 'Сумма'],
-    ['WB-10021', 'носки чёрные 42', '15', '300', '4 500'],
-    ['WB-10022', 'носки чёрные', '6', '200', '1 200'],
-    ['WB-10098', 'ботинки зимние жен.', '4', '8 000', '32 000'],
-    ['WB-10114', 'шапка вязаная бел.', '10', '890', '8 900'],
-    ['WB-10130', 'кроссовки бел. 40', '8', '3 250', '26 000'],
-    ['WB-10145', 'трусы муж. XL', '10', '340', '3 400'],
-  ];
+  const API_BASE = '/api';
 
-  let headerRowIndex = 1; // sensible auto-detected default — user can override
+  // Filled in from the real POST /api/upload response — no more mock rows.
+  let rawRows = [];       // preview_rows from the API (capped server-side at 20)
+  let totalRowCount = 0;  // real row_count from the API (may exceed preview_rows.length)
+  let sessionId = null;
+
+  let headerRowIndex = 0;
   let entityCol = null;
   let metricCol = null;
 
-  function headerCells() { return rawRows[headerRowIndex]; }
+  function headerCells() { return rawRows[headerRowIndex] || []; }
 
+  // ---------- Upload wiring ----------
+  const uploadZone = document.getElementById('uploadZone');
+  const fileInput = document.getElementById('fileInput');
+  const uploadError = document.getElementById('uploadError');
+
+  uploadZone.addEventListener('click', () => fileInput.click());
+  uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('drag-over'); });
+  uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('drag-over'));
+  uploadZone.addEventListener('drop', e => {
+    e.preventDefault();
+    uploadZone.classList.remove('drag-over');
+    if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+  });
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files.length) handleFile(fileInput.files[0]);
+  });
+
+  function showUploadError(message) {
+    document.getElementById('uploadIdle').classList.remove('hidden');
+    document.getElementById('uploadSpinner').classList.add('hidden');
+    const errEl = document.getElementById('uploadError');
+    errEl.textContent = message;
+    errEl.classList.remove('hidden');
+  }
+
+  async function handleFile(file) {
+    document.getElementById('uploadError').classList.add('hidden');
+    document.getElementById('uploadIdle').classList.add('hidden');
+    document.getElementById('uploadSpinner').classList.remove('hidden');
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    let resp;
+    try {
+      resp = await fetch(`${API_BASE}/upload`, { method: 'POST', body: formData });
+    } catch (err) {
+      showUploadError('Не удалось связаться с сервером: ' + err.message);
+      return;
+    }
+
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({}));
+      showUploadError(body.detail || `Ошибка загрузки (${resp.status})`);
+      return;
+    }
+
+    const body = await resp.json();
+    sessionId = body.session_id;
+    rawRows = body.preview_rows;
+    totalRowCount = body.row_count;
+    headerRowIndex = rawRows.length > 1 ? 1 : 0; // decorative-row-above-header is the common case
+    entityCol = null;
+    metricCol = null;
+
+    document.getElementById('fileNameLabel').textContent = body.filename || file.name;
+    document.getElementById('pageTitle').textContent = 'Какие колонки разбирать?';
+    document.getElementById('pageHint').textContent = 'Кликните по строке, где на самом деле начинаются заголовки — а затем по нужным колонкам ниже';
+
+    document.getElementById('uploadZone').classList.add('hidden');
+    document.getElementById('pickWorkspace').classList.remove('hidden');
+    document.getElementById('continueBar').classList.remove('hidden');
+
+    render();
+  }
+
+  // ---------- Preview / column picking (same interaction as before, now
+  // driven by real preview_rows instead of a hardcoded array) ----------
   function render() {
     const table = document.getElementById('previewTable');
     table.innerHTML = '';
 
-    // column header row (clickable to assign role)
     const thead = document.createElement('tr');
     headerCells().forEach((label, colIdx) => {
       const th = document.createElement('th');
@@ -221,14 +309,24 @@
       let role = '';
       if (colIdx === entityCol) role = 'Группировка';
       if (colIdx === metricCol) role = 'Сумма';
-      th.innerHTML = `<div class="col-head-inner"><span class="col-name">${label || '—'}</span><span class="col-role">${role}</span></div>`;
+      // Built via DOM APIs, not innerHTML — the label text comes straight
+      // from the uploaded file's cell content, which is untrusted input.
+      const inner = document.createElement('div');
+      inner.className = 'col-head-inner';
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'col-name';
+      nameSpan.textContent = (label === null || label === undefined || label === '') ? '—' : String(label);
+      const roleSpan = document.createElement('span');
+      roleSpan.className = 'col-role';
+      roleSpan.textContent = role;
+      inner.appendChild(nameSpan);
+      inner.appendChild(roleSpan);
+      th.appendChild(inner);
       th.addEventListener('click', () => pickColumn(colIdx));
       thead.appendChild(th);
     });
     table.appendChild(thead);
 
-    // data rows — everything except the header row itself, rendered in
-    // original order so the decorative row is visible and clickable too
     rawRows.forEach((row, rowIdx) => {
       if (rowIdx === headerRowIndex) return;
       const tr = document.createElement('tr');
@@ -240,15 +338,26 @@
         const td = document.createElement('td');
         if (colIdx === entityCol) td.classList.add('picked-entity');
         if (colIdx === metricCol) td.classList.add('picked-metric');
+        const cellText = cell === null || cell === undefined ? '' : String(cell);
         if (colIdx === 0 && isDecor) {
-          td.innerHTML = `<span class="row-flag">не заголовок?</span>${cell}`;
+          // DOM APIs, not innerHTML — cellText is untrusted file content.
+          const flag = document.createElement('span');
+          flag.className = 'row-flag';
+          flag.textContent = 'не заголовок?';
+          td.appendChild(flag);
+          td.appendChild(document.createTextNode(cellText));
         } else {
-          td.textContent = cell;
+          td.textContent = cellText;
         }
         tr.appendChild(td);
       });
       table.appendChild(tr);
     });
+
+    const shownNote = totalRowCount > rawRows.length
+      ? `Показаны первые ${rawRows.length} строк файла — остальные ${totalRowCount - rawRows.length} разберутся так же, по этому образцу`
+      : `Показаны все ${rawRows.length} строк файла`;
+    document.getElementById('tableHint').textContent = shownNote;
 
     updateChips();
   }
@@ -266,7 +375,7 @@
     if (metricCol === colIdx) { metricCol = null; render(); return; }
     if (entityCol === null) { entityCol = colIdx; }
     else if (metricCol === null) { metricCol = colIdx; }
-    else { entityCol = colIdx; } // both already set — clicking a third column restarts the entity pick
+    else { entityCol = colIdx; }
     render();
   }
 
@@ -300,7 +409,8 @@
     const status = document.getElementById('continueStatus');
     const btn = document.getElementById('continueBtn');
     if (entityCol !== null && metricCol !== null) {
-      status.innerHTML = `Строк данных: <span class="mono">${rawRows.length - 1 - headerRowIndex}</span>`;
+      const dataRows = totalRowCount - 1 - headerRowIndex;
+      status.innerHTML = `Строк данных: <span class="mono">${dataRows}</span>`;
       btn.classList.remove('is-disabled');
     } else {
       status.textContent = 'Выберите обе колонки';
@@ -308,7 +418,41 @@
     }
   }
 
-  render();
+  // ---------- Continue: POST /api/session/{id}/columns, then redirect ----------
+  document.getElementById('continueBtn').addEventListener('click', async () => {
+    if (entityCol === null || metricCol === null || !sessionId) return;
+    const btn = document.getElementById('continueBtn');
+    btn.classList.add('is-disabled');
+    btn.textContent = 'Сохраняем…';
+
+    let resp;
+    try {
+      resp = await fetch(`${API_BASE}/session/${sessionId}/columns`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          header_row_index: headerRowIndex,
+          entity_column: entityCol,
+          metric_column: metricCol,
+        }),
+      });
+    } catch (err) {
+      alert('Не удалось связаться с сервером: ' + err.message);
+      btn.classList.remove('is-disabled');
+      btn.textContent = 'Продолжить';
+      return;
+    }
+
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({}));
+      alert(body.detail || `Ошибка (${resp.status})`);
+      btn.classList.remove('is-disabled');
+      btn.textContent = 'Продолжить';
+      return;
+    }
+
+    window.location.href = `app.html?session=${encodeURIComponent(sessionId)}`;
+  });
 </script>
 
 </body>
