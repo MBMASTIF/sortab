@@ -18,6 +18,7 @@ meaningful HTTP error, never a bare 500 or silent data loss.
 
 from decimal import Decimal
 from io import BytesIO
+from pathlib import Path
 
 import fakeredis
 import openpyxl
@@ -25,6 +26,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.main import app, get_redis
+
+FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
 @pytest.fixture
@@ -231,6 +234,72 @@ def test_full_workflow_reconciles_and_exports_correctly(client):
     assert entities_after_delete.status_code == 200  # session still usable afterwards
 
 
+def test_full_workflow_with_pdf_source_reconciles_correctly(client):
+    """The architecture claim this whole feature exists to prove: a PDF
+    source goes through upload -> columns -> entities -> groups -> assign
+    -> summary -> export using EXACTLY the same endpoints as the Excel
+    workflow above, no PDF-specific branching anywhere in this file.
+    Uses the multi-page fixture (3 pages, repeated header, 12 data rows)
+    so this also proves core.parsing._glue_pdf_page_grids()'s output is
+    directly usable by backend/columns.py::finalize_columns() unmodified.
+    Expected total (79390.55) is the same independently Decimal-computed
+    number backend/tests/fixtures/generate_fixtures.py prints when the
+    fixture is generated — not trusted blindly here."""
+    pdf_bytes = (FIXTURES_DIR / "pdf_multipage_table.pdf").read_bytes()
+
+    upload_resp = client.post(
+        "/api/upload",
+        files={"file": ("Накладная.pdf", pdf_bytes, "application/pdf")},
+    )
+    assert upload_resp.status_code == 200, upload_resp.text
+    upload_body = upload_resp.json()
+    session_id = upload_body["session_id"]
+    # header glued once at row 0, 12 data rows, duplicate per-page headers
+    # already dropped by _glue_pdf_page_grids() before this ever reaches
+    # the API layer.
+    assert upload_body["row_count"] == 13
+    assert upload_body["preview_rows"][0] == ["Товар", "Кол-во", "Сумма"]
+
+    columns_resp = client.post(
+        f"/api/session/{session_id}/columns",
+        json={"header_row_index": 0, "entity_column": 0, "metric_column": 2},
+    )
+    assert columns_resp.status_code == 200, columns_resp.text
+    assert columns_resp.json()["row_count"] == 12
+
+    entities_resp = client.get(f"/api/session/{session_id}/entities")
+    assert entities_resp.status_code == 200
+    entities = entities_resp.json()
+    assert len(entities) == 12  # every product name in the fixture is unique
+
+    create_resp = client.post(
+        f"/api/session/{session_id}/groups",
+        json={"group_id": "all", "name": "Всё"},
+    )
+    assert create_resp.status_code == 201, create_resp.text
+
+    assign_resp = client.post(
+        f"/api/session/{session_id}/assign",
+        json={"entity_ids": [e["value"] for e in entities], "group_id": "all"},
+    )
+    assert assign_resp.status_code == 200, assign_resp.text
+    assert assign_resp.json()["assigned"] == 12
+
+    summary_resp = client.get(f"/api/session/{session_id}/summary")
+    assert summary_resp.status_code == 200
+    summary = summary_resp.json()
+    assert Decimal(summary["unassigned_total"]) == Decimal("0")
+    assert Decimal(summary["rollup_totals"]["all"]) == Decimal("79390.55")
+    assert Decimal(summary["grand_total"]) == Decimal("79390.55")
+
+    export_resp = client.get(f"/api/session/{session_id}/export")
+    assert export_resp.status_code == 200
+    workbook = openpyxl.load_workbook(BytesIO(export_resp.content))
+    summary_sheet = workbook["Итоги"]
+    summary_rows = {row[0].value.strip(): row[1].value for row in summary_sheet.iter_rows(min_row=2)}
+    assert Decimal(summary_rows["ИТОГО"]) == Decimal("79390.55")
+
+
 def test_assign_to_unknown_group_is_a_client_error_not_a_500(client):
     upload_body = _upload(client)
     session_id = upload_body["session_id"]
@@ -273,9 +342,23 @@ def test_entities_before_columns_set_is_a_409_not_a_crash(client):
 
 
 def test_unsupported_file_type_is_rejected_cleanly(client):
+    # NOT .pdf any more: PDF is now a supported input format (camelot,
+    # flavor="stream" — see core/parsing.py and tests/test_parsing_pdf.py).
+    # .docx is still genuinely unsupported.
     resp = client.post(
         "/api/upload",
-        files={"file": ("report.pdf", b"%PDF-1.4 not really a spreadsheet", "application/pdf")},
+        files={"file": ("report.docx", b"not really a spreadsheet", "application/octet-stream")},
+    )
+    assert resp.status_code == 400
+
+
+def test_malformed_pdf_is_rejected_cleanly_not_500(client):
+    """A .pdf upload whose bytes aren't a real PDF at all must still come
+    back as a clean 400, not an unhandled 500 from camelot/pdfminer
+    choking on garbage input."""
+    resp = client.post(
+        "/api/upload",
+        files={"file": ("report.pdf", b"%PDF-1.4 not really a valid pdf body", "application/pdf")},
     )
     assert resp.status_code == 400
 

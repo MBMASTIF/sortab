@@ -175,14 +175,14 @@
 <div class="workspace">
   <div class="toolbar">
     <h1 id="pageTitle">Загрузите файл</h1>
-    <p class="hint" id="pageHint">Excel (.xlsx/.xls/.ods) или CSV — разберём колонки на следующем шаге</p>
+    <p class="hint" id="pageHint">Excel (.xlsx/.xls/.ods), CSV или PDF — разберём колонки на следующем шаге</p>
   </div>
 
   <div class="upload-zone" id="uploadZone">
-    <input type="file" id="fileInput" class="hidden" accept=".xlsx,.xls,.xlsm,.xlsb,.ods,.csv,.txt">
+    <input type="file" id="fileInput" class="hidden" accept=".xlsx,.xls,.xlsm,.xlsb,.ods,.csv,.txt,.pdf">
     <div id="uploadIdle">
       <div class="upload-title">Перетащите файл сюда или нажмите, чтобы выбрать</div>
-      <div class="upload-hint">Поддерживаются Excel и CSV — кодировка и разделитель определятся автоматически</div>
+      <div class="upload-hint">Поддерживаются Excel, CSV и PDF с таблицей — кодировка, разделитель и структура таблицы определятся автоматически</div>
     </div>
     <div class="spinner-line hidden" id="uploadSpinner">Загружаем и разбираем файл…</div>
     <div class="upload-error hidden" id="uploadError"></div>

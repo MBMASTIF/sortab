@@ -106,5 +106,7 @@ def test_csv_raw_exposes_every_row_with_generic_column_names(cp1251_semicolon_cs
 
 
 def test_raw_unsupported_extension_raises():
+    # NOT .pdf any more: parse_file_raw() now supports PDF (see
+    # test_parsing_pdf.py) — .docx is still genuinely unsupported.
     with pytest.raises(UnsupportedFileError):
-        parse_file_raw("report.pdf")
+        parse_file_raw("report.docx")

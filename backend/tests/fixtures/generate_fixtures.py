@@ -35,6 +35,27 @@ real thing that happens with real Russian marketplace/1C exports:
   upload -> assign -> export path (core/reconcile.py, core/export.py both
   use Decimal end to end).
 
+- pdf_invoice_no_borders.pdf: a single-page table (header + 1 data row)
+  drawn with plain positioned text — NO ruled lines/rectangles around the
+  cells, exactly like most real invoices/накладные. Exists to prove
+  core.parsing._read_pdf_raw()'s flavor="stream" choice is actually load
+  -bearing: README documents that camelot's default border-seeking
+  behavior (and pdfplumber's default entirely) finds 0 rows on this exact
+  shape — flavor="stream" (text-position based) is the one that works.
+
+- pdf_multipage_table.pdf: one logical table split across 3 pages with the
+  header row repeated verbatim on every page — the realistic shape for any
+  multi-page PDF export (camelot returns one Table per page). Exercises
+  core.parsing._glue_pdf_page_grids()'s "confirmed repeating header"
+  branch: page 1 kept whole, the duplicate header dropped from pages 2-3.
+
+Both PDF fixtures use real Cyrillic text and reuse the same realistic
+product names as the Excel/CSV fixtures above. Generating them required
+explicitly registering a Cyrillic-capable TTF font first — reportlab's
+default Helvetica has NO Cyrillic glyphs and silently turns Russian text
+into garbage ("nnnnnnn") instead of raising, a real trap already hit once
+in this project.
+
 Run directly to (re)generate the files:
     python backend/tests/fixtures/generate_fixtures.py
 """
@@ -45,8 +66,38 @@ from decimal import Decimal
 from pathlib import Path
 
 import openpyxl
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.pdfgen import canvas
 
 FIXTURES_DIR = Path(__file__).parent
+
+# Common install locations for a Cyrillic-capable TTF, checked in order.
+# Only needed at *generation* time (this script) — the committed .pdf
+# fixtures it produces carry their own embedded font subset, so reading
+# them back via camelot later (in tests, on the server, anywhere) needs no
+# font on the reading machine at all.
+_CYRILLIC_FONT_CANDIDATES = [
+    Path(r"C:\Windows\Fonts\arial.ttf"),  # Windows dev machine
+    Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),  # Debian/Ubuntu server
+    Path("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"),
+    Path("/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"),
+]
+
+
+def _register_cyrillic_font() -> str:
+    for candidate in _CYRILLIC_FONT_CANDIDATES:
+        if candidate.exists():
+            pdfmetrics.registerFont(TTFont("CyrillicFont", str(candidate)))
+            return "CyrillicFont"
+    raise RuntimeError(
+        "No Cyrillic-capable TTF font found on this machine — refusing to "
+        "generate PDF fixtures, since reportlab's default Helvetica would "
+        "silently mangle the Russian text instead of raising. Install one "
+        "(e.g. `apt install fonts-dejavu-core` on the server) or add its "
+        "path to _CYRILLIC_FONT_CANDIDATES above."
+    )
 
 
 def _write_xlsx(filename: str, rows: list[list]) -> None:
@@ -130,9 +181,89 @@ def make_large_fractional_sums() -> None:
     print(f"  expected total (Decimal-summed): {total}")
 
 
+def make_pdf_invoice_no_borders() -> None:
+    """Single-page table, header + 1 data row, drawn as plain positioned
+    text — no c.line()/c.rect() calls anywhere, so there are no ruled
+    borders for a border-seeking parser to find. This is the shape
+    README's benchmark used to show pdfplumber-default finds 0 rows and
+    camelot needs flavor="stream" specifically."""
+    font = _register_cyrillic_font()
+    path = FIXTURES_DIR / "pdf_invoice_no_borders.pdf"
+    c = canvas.Canvas(str(path), pagesize=A4)
+    c.setFont(font, 11)
+
+    col_x = [70, 300, 430]
+    rows = [
+        ["Товар", "Кол-во", "Сумма"],
+        ["хлеб бородинский", "25", "1875"],
+    ]
+    y = 780
+    for row in rows:
+        for x, value in zip(col_x, row):
+            c.drawString(x, y, value)
+        y -= 22
+    c.save()
+    print(f"wrote pdf_invoice_no_borders.pdf ({len(rows) - 1} data row, no borders)")
+
+
+def make_pdf_multipage_table() -> None:
+    """One logical table split across 3 pages, header row repeated
+    verbatim on every page — the realistic pattern for a multi-page PDF
+    export (camelot hands back one Table per page). Total computed with
+    Decimal at generation time, same convention as large_fractional_sums,
+    so the glue test can assert against a known-correct number, not trust
+    the code under test."""
+    font = _register_cyrillic_font()
+    path = FIXTURES_DIR / "pdf_multipage_table.pdf"
+
+    header = ["Товар", "Кол-во", "Сумма"]
+    pages_data = [
+        [
+            ["хлеб белый нарезной", "40", "2400"],
+            ["хлеб бородинский", "25", "1875"],
+            ["молоко 3.2% 1л", "60", "5400"],
+            ["сыр российский 200г", "18", "6300"],
+        ],
+        [
+            ["масло сливочное 180г", "22", "4840"],
+            ["яйцо куриное С1 10шт", "35", "3150"],
+            ["гречка ядрица 900г", "95", "7125.55"],
+            ["ботинки зимние жен.", "1", "32000"],
+        ],
+        [
+            ["шапка вязаная бел.", "1", "8900"],
+            ["носки чёрные 42", "10", "1500"],
+            ["сахар песок 1кг", "40", "2600"],
+            ["мука пшеничная 2кг", "30", "3300"],
+        ],
+    ]
+
+    col_x = [70, 300, 430]
+    c = canvas.Canvas(str(path), pagesize=A4)
+    for page_rows in pages_data:
+        c.setFont(font, 11)  # font does not persist across showPage()
+        y = 780
+        for x, value in zip(col_x, header):
+            c.drawString(x, y, value)
+        y -= 22
+        for row in page_rows:
+            for x, value in zip(col_x, row):
+                c.drawString(x, y, value)
+            y -= 22
+        c.showPage()
+    c.save()
+
+    total = sum((Decimal(row[2]) for page in pages_data for row in page), Decimal("0"))
+    n_rows = sum(len(page) for page in pages_data)
+    print(f"wrote pdf_multipage_table.pdf ({len(pages_data)} pages, {n_rows} data rows)")
+    print(f"  expected total (Decimal-summed): {total}")
+
+
 if __name__ == "__main__":
     FIXTURES_DIR.mkdir(parents=True, exist_ok=True)
     make_decorative_header_1c()
     make_sales_export_cp1251()
     make_similar_names_case_whitespace()
     make_large_fractional_sums()
+    make_pdf_invoice_no_borders()
+    make_pdf_multipage_table()
