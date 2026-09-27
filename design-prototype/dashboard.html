@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>gruper — рабочий стол</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #FAFAF8;
+    --paper-raised: #F2F3EF;
+    --ink: #1A2233;
+    --ink-soft: #5B6472;
+    --stamp: #E8543D;
+    --stamp-dark: #CC4530;
+    --ledger-line: #16A76B;
+    --rule: #E2E4DE;
+    --rule-light: #EDEEE9;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: 'IBM Plex Sans', sans-serif;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono { font-family: 'IBM Plex Mono', monospace; }
+
+  /* ---------- Header ---------- */
+  header {
+    padding: 16px 32px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--rule);
+    background: #fff;
+    position: sticky;
+    top: 0;
+    z-index: 30;
+  }
+  .logo { font-weight: 700; font-size: 18px; display: flex; align-items: center; gap: 8px; text-decoration: none; color: var(--ink); }
+  .logo-mark { width: 22px; height: 22px; border-radius: 7px; background: linear-gradient(135deg, var(--ledger-line), #0E8058); display: inline-block; }
+
+  .account-cluster { display: flex; align-items: center; gap: 14px; }
+  .tier-badge {
+    font-size: 12px;
+    font-weight: 600;
+    padding: 5px 11px;
+    border-radius: 999px;
+    background: var(--paper-raised);
+    color: var(--ink-soft);
+    border: 1px solid var(--rule);
+  }
+  .avatar {
+    width: 34px; height: 34px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #3D4C6E, var(--ink));
+    color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 600;
+    cursor: pointer;
+  }
+
+  /* ---------- Ad slots ----------
+     Reserved space under the header and along both sides of the content
+     column. Ads stay on every tier (including paid) — the monetization
+     hook is usage limits, not ad removal — so these are permanent layout
+     regions, not upsell bait. */
+  .ad-banner {
+    max-width: 1120px;
+    margin: 20px auto 0;
+    padding: 0 32px;
+  }
+  .ad-slot {
+    border: 1px dashed var(--rule);
+    border-radius: 12px;
+    background: var(--paper-raised);
+    color: var(--ink-soft);
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+  }
+  .ad-banner .ad-slot { height: 90px; }
+  .ad-rail { position: sticky; top: 88px; align-self: start; }
+  .ad-rail .ad-slot { width: 160px; height: 600px; writing-mode: vertical-rl; text-orientation: mixed; }
+
+  /* ---------- Shell layout: rail | content | rail ---------- */
+  .shell {
+    max-width: 1440px;
+    margin: 0 auto;
+    padding: 24px 32px 80px;
+    display: grid;
+    grid-template-columns: 160px minmax(0, 880px) 160px;
+    justify-content: center;
+    gap: 24px;
+  }
+  @media (max-width: 1360px) {
+    .shell { grid-template-columns: minmax(0, 880px); }
+    .ad-rail { display: none; }
+  }
+  @media (max-width: 720px) {
+    .ad-banner { padding: 0 16px; }
+    .shell { padding: 20px 16px 60px; }
+  }
+
+  /* ---------- Greeting ---------- */
+  .greeting { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 32px; flex-wrap: wrap; gap: 12px; }
+  .greeting h1 { font-size: 26px; font-weight: 700; letter-spacing: -0.01em; }
+  .greeting p { color: var(--ink-soft); font-size: 14px; margin-top: 4px; }
+  .quota-line { font-size: 13px; color: var(--ink-soft); text-align: right; }
+  .quota-line .mono { color: var(--ink); font-weight: 600; }
+
+  section.block { margin-bottom: 40px; }
+  section.block h2 { font-size: 17px; font-weight: 700; margin-bottom: 4px; }
+  .section-hint { font-size: 13px; color: var(--ink-soft); margin-bottom: 16px; }
+
+  /* ---------- Project cards ---------- */
+  .project-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+  .card {
+    background: #fff;
+    border: 1px solid var(--rule);
+    border-radius: 16px;
+    padding: 18px;
+    box-shadow: 0 2px 8px rgba(26, 34, 51, 0.04);
+  }
+  .project-card { display: flex; flex-direction: column; gap: 14px; }
+  .project-top { display: flex; align-items: flex-start; gap: 12px; }
+  .file-icon { flex-shrink: 0; color: var(--ledger-line); }
+  .project-meta { min-width: 0; }
+  .project-meta .name { font-weight: 600; font-size: 15px; margin-bottom: 2px; line-height: 1.3; }
+  .project-meta .sub { font-size: 12.5px; color: var(--ink-soft); }
+
+  .progress-track { height: 6px; border-radius: 4px; background: var(--rule-light); overflow: hidden; }
+  .progress-fill { height: 100%; min-width: 6px; background: var(--ledger-line); border-radius: 4px; }
+  .progress-label { display: flex; justify-content: space-between; font-size: 12px; color: var(--ink-soft); }
+  .progress-label .mono { color: var(--ink); }
+
+  .project-actions { display: flex; justify-content: space-between; align-items: center; margin-top: 2px; }
+  .btn-open {
+    background: var(--ink);
+    color: #fff;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: inherit;
+    text-decoration: none;
+    display: inline-block;
+  }
+  .btn-open:hover { background: #0E1524; }
+  .edited-at { font-size: 12px; color: var(--ink-soft); }
+
+  .locked-card {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; gap: 10px;
+    border: 1px dashed var(--rule);
+    background: transparent;
+    box-shadow: none;
+    min-height: 168px;
+  }
+  .locked-card .lock-icon { color: var(--ink-soft); }
+  .locked-card .title { font-weight: 600; font-size: 14px; }
+  .locked-card .sub { font-size: 12.5px; color: var(--ink-soft); max-width: 220px; }
+  .btn-upgrade {
+    background: none;
+    border: 1px solid var(--stamp);
+    color: var(--stamp-dark);
+    padding: 7px 14px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: inherit;
+    text-decoration: none;
+  }
+  .btn-upgrade:hover { background: rgba(232,84,61,0.06); }
+
+  /* ---------- Tool cards ---------- */
+  .tools-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; }
+  .tool-card {
+    display: flex; flex-direction: column; gap: 10px;
+    padding: 16px;
+    cursor: pointer;
+    transition: border-color 0.15s ease, transform 0.15s ease;
+  }
+  .tool-card:hover { border-color: var(--ledger-line); transform: translateY(-1px); }
+  .tool-icon { color: var(--ink-soft); }
+  .tool-card .name { font-weight: 600; font-size: 14px; }
+  .tool-card .desc { font-size: 12.5px; color: var(--ink-soft); }
+  .tool-tag { font-size: 11px; color: var(--ink-soft); background: var(--paper-raised); display: inline-block; padding: 2px 8px; border-radius: 999px; width: fit-content; }
+</style>
+</head>
+<body>
+
+<header>
+  <a class="logo" href="index.html"><span class="logo-mark"></span>gruper</a>
+  <div class="account-cluster">
+    <span class="tier-badge">Тариф: Бесплатно</span>
+    <div class="avatar" title="Аккаунт">АМ</div>
+  </div>
+</header>
+
+<div class="ad-banner">
+  <div class="ad-slot">Место для рекламы · 728×90</div>
+</div>
+
+<div class="shell">
+  <aside class="ad-rail">
+    <div class="ad-slot">Реклама · 160×600</div>
+  </aside>
+
+  <main>
+    <div class="greeting">
+      <div>
+        <h1>Добрый день, Андрей</h1>
+        <p>Ваши сохранённые проекты и инструменты для разовой обработки</p>
+      </div>
+      <div class="quota-line">
+        Проекты: <span class="mono">1 / 1</span><br>
+        PDF-страницы в этом месяце: <span class="mono">0 / 10</span>
+      </div>
+    </div>
+
+    <section class="block">
+      <h2>Проекты</h2>
+      <p class="section-hint">Сохранённое дерево категорий для отчёта, который вы разбираете регулярно</p>
+      <div class="project-grid">
+
+        <div class="card project-card">
+          <div class="project-top">
+            <svg class="file-icon" width="28" height="28" viewBox="0 0 28 28" fill="none">
+              <rect x="4" y="3" width="20" height="22" rx="2.5" stroke="currentColor" stroke-width="1.6"/>
+              <path d="M4 10.5H24" stroke="currentColor" stroke-width="1.6"/>
+              <path d="M10.5 10.5V25" stroke="currentColor" stroke-width="1.6"/>
+              <path d="M17.5 10.5V25" stroke="currentColor" stroke-width="1.6"/>
+              <path d="M4 17.5H24" stroke="currentColor" stroke-width="1.6"/>
+            </svg>
+            <div class="project-meta">
+              <div class="name">Продажи маркетплейса — черновик</div>
+              <div class="sub">Excel · 10 значений · WB-экспорт</div>
+            </div>
+          </div>
+          <div>
+            <div class="progress-track"><div class="progress-fill" style="width: 4%"></div></div>
+            <div class="progress-label">
+              <span>Разобрано</span>
+              <span class="mono">4 500 ₽ из 113 700 ₽</span>
+            </div>
+          </div>
+          <div class="project-actions">
+            <span class="edited-at">Изменено сегодня в 14:32</span>
+            <a class="btn-open" href="app.html">Продолжить</a>
+          </div>
+        </div>
+
+        <div class="card locked-card">
+          <svg class="lock-icon" width="26" height="26" viewBox="0 0 26 26" fill="none">
+            <rect x="6" y="12" width="14" height="10" rx="2" stroke="currentColor" stroke-width="1.6"/>
+            <path d="M9 12V8.5C9 5.98 11.02 4 13.5 4C15.98 4 18 5.98 18 8.5V12" stroke="currentColor" stroke-width="1.6"/>
+          </svg>
+          <div class="title">Второй проект</div>
+          <div class="sub">На тарифе «Бесплатно» доступен 1 сохранённый проект</div>
+          <a class="btn-upgrade" href="index.html#pricing">Улучшить тариф</a>
+        </div>
+
+      </div>
+    </section>
+
+    <section class="block">
+      <h2>Инструменты</h2>
+      <p class="section-hint">Разовая обработка файла — результат не сохраняется как проект</p>
+      <div class="tools-grid">
+
+        <div class="card tool-card" data-tool="unpivot">
+          <svg class="tool-icon" width="24" height="24" viewBox="0 0 24 24" fill="none">
+            <rect x="3" y="4" width="8" height="7" rx="1.4" stroke="currentColor" stroke-width="1.6"/>
+            <rect x="13" y="4" width="8" height="7" rx="1.4" stroke="currentColor" stroke-width="1.6"/>
+            <path d="M7 11V20M17 11V20" stroke="currentColor" stroke-width="1.6"/>
+            <path d="M4 20H10M14 20H20" stroke="currentColor" stroke-width="1.6"/>
+          </svg>
+          <div class="name">Развернуть сводную</div>
+          <div class="desc">Unpivot — широкая таблица в длинный формат</div>
+          <span class="tool-tag">Excel</span>
+        </div>
+
+        <div class="card tool-card" data-tool="compare">
+          <svg class="tool-icon" width="24" height="24" viewBox="0 0 24 24" fill="none">
+            <rect x="2.5" y="4" width="8" height="16" rx="1.6" stroke="currentColor" stroke-width="1.6"/>
+            <rect x="13.5" y="4" width="8" height="16" rx="1.6" stroke="currentColor" stroke-width="1.6"/>
+            <path d="M9 9L13 12L9 15" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <div class="name">Сравнение файлов</div>
+          <div class="desc">Расхождения между двумя версиями отчёта</div>
+          <span class="tool-tag">Excel · PDF</span>
+        </div>
+
+        <div class="card tool-card" data-tool="mailmerge">
+          <svg class="tool-icon" width="24" height="24" viewBox="0 0 24 24" fill="none">
+            <rect x="3" y="5" width="18" height="14" rx="2" stroke="currentColor" stroke-width="1.6"/>
+            <path d="M3.5 6L12 13L20.5 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <div class="name">Именные документы</div>
+          <div class="desc">Mail Merge — список из Excel в N PDF</div>
+          <span class="tool-tag">Excel → PDF</span>
+        </div>
+
+        <div class="card tool-card" data-tool="split">
+          <svg class="tool-icon" width="24" height="24" viewBox="0 0 24 24" fill="none">
+            <rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor" stroke-width="1.6"/>
+            <path d="M12 3V21" stroke="currentColor" stroke-width="1.6" stroke-dasharray="2.5 3"/>
+          </svg>
+          <div class="name">Разбивка по маркеру</div>
+          <div class="desc">Один PDF на несколько по разделителю</div>
+          <span class="tool-tag">PDF</span>
+        </div>
+
+        <div class="card tool-card" data-tool="watermark">
+          <svg class="tool-icon" width="24" height="24" viewBox="0 0 24 24" fill="none">
+            <rect x="4" y="3" width="16" height="18" rx="2" stroke="currentColor" stroke-width="1.6"/>
+            <path d="M7 15.5L17 7.5" stroke="currentColor" stroke-width="4.5" stroke-linecap="round" opacity="0.18"/>
+            <path d="M7.5 8H14.5M7.5 11H12.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" opacity="0.6"/>
+          </svg>
+          <div class="name">Водяные знаки</div>
+          <div class="desc">Штамп на каждой странице при скачивании</div>
+          <span class="tool-tag">PDF</span>
+        </div>
+
+      </div>
+    </section>
+  </main>
+
+  <aside class="ad-rail">
+    <div class="ad-slot">Реклама · 160×600</div>
+  </aside>
+</div>
+
+</body>
+</html>

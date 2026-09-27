@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>gruper — какие колонки разбирать</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #FAFAF8;
+    --paper-raised: #F2F3EF;
+    --ink: #1A2233;
+    --ink-soft: #5B6472;
+    --stamp: #E8543D;
+    --stamp-dark: #CC4530;
+    --ledger-line: #16A76B;
+    --rule: #E2E4DE;
+    --rule-light: #EDEEE9;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: 'IBM Plex Sans', sans-serif;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono { font-family: 'IBM Plex Mono', monospace; }
+
+  header {
+    padding: 16px 32px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--rule);
+    background: #fff;
+  }
+  .logo { font-weight: 700; font-size: 18px; display: flex; align-items: center; gap: 8px; text-decoration: none; color: var(--ink); }
+  .logo-mark { width: 22px; height: 22px; border-radius: 7px; background: linear-gradient(135deg, var(--ledger-line), #0E8058); display: inline-block; }
+  .file-name { color: var(--ink-soft); font-size: 14px; }
+  .file-name::before { content: "/"; margin-right: 12px; color: var(--rule); }
+
+  .workspace { max-width: 1040px; margin: 0 auto; padding: 28px 32px 140px; }
+
+  .toolbar h1 { font-size: 22px; font-weight: 700; margin-bottom: 4px; }
+  .toolbar .hint { font-size: 14px; color: var(--ink-soft); margin-bottom: 24px; }
+
+  /* ---------- Legend / pick state ---------- */
+  .pick-row { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+  .pick-chip {
+    display: flex; align-items: center; gap: 8px;
+    padding: 9px 14px;
+    border-radius: 10px;
+    border: 1.5px solid var(--rule);
+    background: #fff;
+    font-size: 13.5px;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  .pick-chip .swatch { width: 11px; height: 11px; border-radius: 3px; flex-shrink: 0; }
+  .pick-chip.entity .swatch { background: var(--ledger-line); }
+  .pick-chip.metric .swatch { background: var(--stamp); }
+  .pick-chip .value { font-weight: 600; }
+  .pick-chip .placeholder { color: var(--ink-soft); font-weight: 400; }
+  .pick-chip.done.entity { border-color: var(--ledger-line); background: rgba(22,167,107,0.06); }
+  .pick-chip.done.metric { border-color: var(--stamp); background: rgba(232,84,61,0.06); }
+
+  /* ---------- Preview table ---------- */
+  .preview-card {
+    background: #fff;
+    border: 1px solid var(--rule);
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: 0 2px 8px rgba(26, 34, 51, 0.04);
+    margin-bottom: 20px;
+  }
+  .preview-scroll { overflow-x: auto; }
+  table.preview { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  table.preview td, table.preview th { padding: 10px 14px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--rule-light); }
+
+  .col-head {
+    cursor: pointer;
+    user-select: none;
+    border-bottom: 2px solid var(--rule);
+    background: var(--paper-raised);
+    transition: background 0.15s ease;
+  }
+  .col-head:hover .col-head-inner { background: var(--rule-light); }
+  .col-head-inner { display: flex; flex-direction: column; gap: 4px; padding: 2px 0; border-radius: 6px; }
+  .col-head .col-name { font-weight: 600; }
+  .col-head .col-role { font-size: 11px; color: var(--ink-soft); height: 14px; }
+  .col-head.picked-entity { background: rgba(22,167,107,0.12); }
+  .col-head.picked-entity .col-role { color: var(--ledger-line); font-weight: 600; }
+  .col-head.picked-metric { background: rgba(232,84,61,0.12); }
+  .col-head.picked-metric .col-role { color: var(--stamp-dark); font-weight: 600; }
+
+  td.picked-entity { background: rgba(22,167,107,0.05); }
+  td.picked-metric { background: rgba(232,84,61,0.05); }
+
+  tr.header-row-candidate { cursor: pointer; }
+  tr.header-row-candidate:hover td { background: var(--paper-raised); }
+  tr.header-row-candidate.is-decor td { color: var(--ink-soft); font-style: italic; }
+  tr.header-row-candidate.is-header td { background: rgba(26,34,51,0.04); font-weight: 600; }
+
+  .row-flag {
+    display: inline-block;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: #fff;
+    background: var(--ink);
+    padding: 2px 7px;
+    border-radius: 999px;
+    margin-right: 8px;
+  }
+
+  .table-hint { padding: 12px 14px; font-size: 12.5px; color: var(--ink-soft); border-top: 1px solid var(--rule-light); background: var(--paper-raised); }
+
+  /* ---------- Sticky continue bar ---------- */
+  .continue-bar {
+    position: fixed;
+    left: 50%;
+    bottom: 24px;
+    transform: translate(-50%, 0);
+    background: var(--ink);
+    color: #fff;
+    padding: 14px 16px 14px 20px;
+    border-radius: 14px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    box-shadow: 0 12px 32px rgba(0,0,0,0.25);
+  }
+  .continue-bar .status { font-size: 13px; }
+  .continue-bar .status .mono { color: rgba(255,255,255,0.6); }
+  .btn-continue {
+    background: var(--ledger-line);
+    border: none;
+    color: #fff;
+    padding: 10px 20px;
+    border-radius: 9px;
+    font-weight: 600;
+    font-size: 14px;
+    cursor: pointer;
+    font-family: inherit;
+    text-decoration: none;
+    display: inline-block;
+  }
+  .btn-continue.is-disabled { background: #4A5568; cursor: not-allowed; opacity: 0.6; pointer-events: none; }
+</style>
+</head>
+<body>
+
+<header>
+  <a class="logo" href="index.html"><span class="logo-mark"></span>gruper</a>
+  <span class="file-name">Продажи_сентябрь.xlsx</span>
+</header>
+
+<div class="workspace">
+  <div class="toolbar">
+    <h1>Какие колонки разбирать?</h1>
+    <p class="hint">Кликните по строке, где на самом деле начинаются заголовки — а затем по нужным колонкам ниже</p>
+  </div>
+
+  <div class="pick-row">
+    <div class="pick-chip entity" id="chipEntity">
+      <span class="swatch"></span>
+      <span>Группировать по: <span class="value placeholder" id="chipEntityValue">не выбрано</span></span>
+    </div>
+    <div class="pick-chip metric" id="chipMetric">
+      <span class="swatch"></span>
+      <span>Суммировать: <span class="value placeholder" id="chipMetricValue">не выбрано</span></span>
+    </div>
+  </div>
+
+  <div class="preview-card">
+    <div class="preview-scroll">
+      <table class="preview" id="previewTable"></table>
+    </div>
+    <div class="table-hint">Показаны первые 8 строк файла — остальные 3 412 разберутся так же, по этому образцу</div>
+  </div>
+</div>
+
+<div class="continue-bar">
+  <span class="status" id="continueStatus">Выберите обе колонки</span>
+  <a class="btn-continue" id="continueBtn" href="app.html">Продолжить</a>
+</div>
+
+<script>
+  // Mock raw sheet exactly as it would arrive from parse_file() — including
+  // a decorative report-title row before the real header, a very real
+  // pattern in 1C/WB exports that a blind "row 1 = header" assumption would
+  // parse as data.
+  const rawRows = [
+    ['Отчёт по продажам — сентябрь 2026', '', '', '', ''],
+    ['Артикул', 'Товар', 'Кол-во', 'Цена', 'Сумма'],
+    ['WB-10021', 'носки чёрные 42', '15', '300', '4 500'],
+    ['WB-10022', 'носки чёрные', '6', '200', '1 200'],
+    ['WB-10098', 'ботинки зимние жен.', '4', '8 000', '32 000'],
+    ['WB-10114', 'шапка вязаная бел.', '10', '890', '8 900'],
+    ['WB-10130', 'кроссовки бел. 40', '8', '3 250', '26 000'],
+    ['WB-10145', 'трусы муж. XL', '10', '340', '3 400'],
+  ];
+
+  let headerRowIndex = 1; // sensible auto-detected default — user can override
+  let entityCol = null;
+  let metricCol = null;
+
+  function headerCells() { return rawRows[headerRowIndex]; }
+
+  function render() {
+    const table = document.getElementById('previewTable');
+    table.innerHTML = '';
+
+    // column header row (clickable to assign role)
+    const thead = document.createElement('tr');
+    headerCells().forEach((label, colIdx) => {
+      const th = document.createElement('th');
+      th.className = 'col-head';
+      if (colIdx === entityCol) th.classList.add('picked-entity');
+      if (colIdx === metricCol) th.classList.add('picked-metric');
+      let role = '';
+      if (colIdx === entityCol) role = 'Группировка';
+      if (colIdx === metricCol) role = 'Сумма';
+      th.innerHTML = `<div class="col-head-inner"><span class="col-name">${label || '—'}</span><span class="col-role">${role}</span></div>`;
+      th.addEventListener('click', () => pickColumn(colIdx));
+      thead.appendChild(th);
+    });
+    table.appendChild(thead);
+
+    // data rows — everything except the header row itself, rendered in
+    // original order so the decorative row is visible and clickable too
+    rawRows.forEach((row, rowIdx) => {
+      if (rowIdx === headerRowIndex) return;
+      const tr = document.createElement('tr');
+      tr.className = 'header-row-candidate';
+      const isDecor = rowIdx < headerRowIndex;
+      if (isDecor) tr.classList.add('is-decor');
+      tr.addEventListener('click', () => setHeaderRow(rowIdx));
+      row.forEach((cell, colIdx) => {
+        const td = document.createElement('td');
+        if (colIdx === entityCol) td.classList.add('picked-entity');
+        if (colIdx === metricCol) td.classList.add('picked-metric');
+        if (colIdx === 0 && isDecor) {
+          td.innerHTML = `<span class="row-flag">не заголовок?</span>${cell}`;
+        } else {
+          td.textContent = cell;
+        }
+        tr.appendChild(td);
+      });
+      table.appendChild(tr);
+    });
+
+    updateChips();
+  }
+
+  function setHeaderRow(rowIdx) {
+    if (rowIdx === headerRowIndex) return;
+    headerRowIndex = rowIdx;
+    entityCol = null;
+    metricCol = null;
+    render();
+  }
+
+  function pickColumn(colIdx) {
+    if (entityCol === colIdx) { entityCol = null; render(); return; }
+    if (metricCol === colIdx) { metricCol = null; render(); return; }
+    if (entityCol === null) { entityCol = colIdx; }
+    else if (metricCol === null) { metricCol = colIdx; }
+    else { entityCol = colIdx; } // both already set — clicking a third column restarts the entity pick
+    render();
+  }
+
+  function updateChips() {
+    const cells = headerCells();
+    const entityChip = document.getElementById('chipEntity');
+    const metricChip = document.getElementById('chipMetric');
+    const entityVal = document.getElementById('chipEntityValue');
+    const metricVal = document.getElementById('chipMetricValue');
+
+    if (entityCol !== null) {
+      entityVal.textContent = cells[entityCol];
+      entityVal.classList.remove('placeholder');
+      entityChip.classList.add('done');
+    } else {
+      entityVal.textContent = 'не выбрано';
+      entityVal.classList.add('placeholder');
+      entityChip.classList.remove('done');
+    }
+
+    if (metricCol !== null) {
+      metricVal.textContent = cells[metricCol];
+      metricVal.classList.remove('placeholder');
+      metricChip.classList.add('done');
+    } else {
+      metricVal.textContent = 'не выбрано';
+      metricVal.classList.add('placeholder');
+      metricChip.classList.remove('done');
+    }
+
+    const status = document.getElementById('continueStatus');
+    const btn = document.getElementById('continueBtn');
+    if (entityCol !== null && metricCol !== null) {
+      status.innerHTML = `Строк данных: <span class="mono">${rawRows.length - 1 - headerRowIndex}</span>`;
+      btn.classList.remove('is-disabled');
+    } else {
+      status.textContent = 'Выберите обе колонки';
+      btn.classList.add('is-disabled');
+    }
+  }
+
+  render();
+</script>
+
+</body>
+</html>
