@@ -316,6 +316,52 @@
   .reconcile-value.unassigned { color: var(--stamp); }
   .reconcile-value.unassigned.zero { color: var(--ledger-line); }
 
+  /* ---------- Tree tabs (one per categorized column) ---------- */
+  .tree-tabs { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+  .tree-tab {
+    background: #fff;
+    border: 1.5px solid var(--rule);
+    color: var(--ink-soft);
+    padding: 8px 16px;
+    border-radius: 999px;
+    font-size: 13.5px;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .tree-tab:hover { border-color: var(--ledger-line); color: var(--ink); }
+  .tree-tab.active { background: var(--ink); border-color: var(--ink); color: #fff; }
+
+  .tree-toolbar-label { font-size: 13px; color: var(--ink-soft); margin-right: auto; align-self: center; }
+
+  /* ---------- Разбивка panel ---------- */
+  .breakdown-section {
+    background: #fff;
+    border: 1px solid var(--rule);
+    border-radius: 16px;
+    margin-top: 20px;
+    overflow: hidden;
+    box-shadow: 0 2px 8px rgba(26, 34, 51, 0.04);
+  }
+  .breakdown-head {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--rule);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .breakdown-head h2 { font-size: 15px; font-weight: 600; }
+  .breakdown-table-wrap { overflow-x: auto; max-height: 360px; }
+  table.breakdown-table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  table.breakdown-table th, table.breakdown-table td {
+    padding: 9px 14px;
+    text-align: left;
+    white-space: nowrap;
+    border-bottom: 1px solid var(--rule-light);
+  }
+  table.breakdown-table th { background: var(--paper-raised); font-weight: 600; position: sticky; top: 0; }
+  table.breakdown-table td.mono { font-weight: 600; }
+
   @media (max-width: 860px) {
     .panels { grid-template-columns: 1fr; }
     .reconcile-bar { gap: 20px; padding: 12px 16px; }
@@ -345,11 +391,13 @@
     <span class="hint">Отметьте значения слева и отправьте в нужную категорию справа</span>
   </div>
 
+  <div class="tree-tabs hidden" id="treeTabs"></div>
+
   <div class="panels">
     <div class="panel">
       <div class="panel-head">
         <div class="panel-title">
-          <span>Нераспределённые</span>
+          <span id="unassignedTitle">Нераспределённые</span>
           <span class="count" id="unassignedCount">0</span>
         </div>
         <input type="text" class="search-box" id="searchBox" placeholder="Поиск по названию…">
@@ -359,9 +407,21 @@
 
     <div class="panel">
       <div class="tree-toolbar">
+        <span class="tree-toolbar-label" id="activeColumnLabel"></span>
+        <button class="btn-ghost hidden" id="breakdownBtn">Разбивка</button>
         <button class="btn-ghost" id="addRootBtn">+ Новая категория</button>
       </div>
       <div class="tree" id="treeContainer"></div>
+    </div>
+  </div>
+
+  <div class="breakdown-section hidden" id="breakdownSection">
+    <div class="breakdown-head">
+      <h2 id="breakdownTitle">Разбивка</h2>
+      <button class="icon-btn" id="closeBreakdownBtn">закрыть ✕</button>
+    </div>
+    <div class="breakdown-table-wrap">
+      <table class="breakdown-table" id="breakdownTable"></table>
     </div>
   </div>
 </div>
@@ -412,40 +472,49 @@
   document.getElementById('saveProjectBtn').classList.remove('hidden');
 
   // --- Local state, populated from the real API ---
-  let entities = [];               // [{value, occurrences, is_new}] from GET /entities
-  // Tree mirror, hydrated from GET /session/{id}/groups on load (see
-  // loadGroups() below) and then kept in sync locally as the user
-  // creates/deletes groups this page-load — the server is always the
-  // source of truth, this is just a display cache.
-  let groups = {};                 // id -> {id, name, parentId}
-  let nextGroupId = 1;
-  // value -> group_id, for entities we know are assigned (either we just
-  // assigned them this page-load, or the initial /summary said they're
-  // not unassigned — the latter case gets a placeholder id since we don't
-  // know which group without a groups-listing endpoint).
-  let assignedGroup = new Map();
-  let latestSummary = null;        // GET /summary response
+  // A session can categorize MORE THAN ONE column at once (see
+  // core/session.py) — each gets its own independent tree/entity list/
+  // reconciliation, switched between via tabs. Everything that used to be
+  // one flat set of globals now lives per column in columnState, keyed by
+  // column name, so switching tabs never loses another tab's progress.
+  let categorizedColumns = [];   // ["Товар", "Клиент", ...], tab order
+  let dimensionColumns = [];     // raw "разбивка" columns, no tree
+  let activeColumn = null;
+  let columnState = {};          // column name -> per-column state (see freshColumnState)
 
-  function addGroup(name, parentId) {
-    const id = 'g' + (nextGroupId++) + '_' + Math.random().toString(36).slice(2, 6);
-    groups[id] = { id, name, parentId };
-    return id;
+  function freshColumnState() {
+    return {
+      groups: {},               // id -> {id, name, parentId}
+      nextGroupId: 1,
+      entities: [],             // [{value, occurrences, is_new}] from GET /entities/{column}
+      // value -> group_id, for entities we know are assigned (either we
+      // just assigned them this page-load, or the initial /summary said
+      // they're not unassigned — the latter case gets a placeholder id
+      // since GET /summary doesn't hand back per-entity group ids).
+      assignedGroup: new Map(),
+      latestSummary: null,      // GET /summary/{column} response
+      selected: new Set(),
+      bulkTargetId: null,
+    };
   }
 
+  function cur() { return columnState[activeColumn]; }
+
   function isLeaf(groupId) {
-    return !Object.values(groups).some(g => g.parentId === groupId);
+    return !Object.values(cur().groups).some(g => g.parentId === groupId);
   }
 
   function children(parentId) {
-    return Object.values(groups).filter(g => g.parentId === parentId);
+    return Object.values(cur().groups).filter(g => g.parentId === parentId);
   }
 
   function groupPath(groupId) {
+    const groups = cur().groups;
     const path = [];
-    let cur = groupId;
-    while (cur) {
-      path.unshift(groups[cur].name);
-      cur = groups[cur].parentId;
+    let g = groupId;
+    while (g) {
+      path.unshift(groups[g].name);
+      g = groups[g].parentId;
     }
     return path;
   }
@@ -455,9 +524,6 @@
     if (Number.isNaN(n)) return '0 ₽';
     return n.toLocaleString('ru-RU', { maximumFractionDigits: 2 }) + ' ₽';
   }
-
-  let selected = new Set();
-  let bulkTargetId = null;
 
   // ---------- API calls ----------
   async function apiFetch(path, options = {}) {
@@ -479,57 +545,95 @@
     return resp.json();
   }
 
-  async function loadGroups() {
-    const serverGroups = await apiFetch(`/session/${encodeURIComponent(sessionId)}/groups`);
-    groups = {};
-    serverGroups.forEach(g => {
-      groups[g.id] = { id: g.id, name: g.name, parentId: g.parent_id };
-    });
+  async function loadColumnsInfo() {
+    const info = await apiFetch(`/session/${encodeURIComponent(sessionId)}/columns`);
+    categorizedColumns = info.categorized_columns;
+    dimensionColumns = info.dimension_columns || [];
+    activeColumn = categorizedColumns[0];
   }
 
-  async function loadEntities() {
-    entities = await apiFetch(`/session/${encodeURIComponent(sessionId)}/entities`);
-  }
-
-  async function loadSummary() {
-    latestSummary = await apiFetch(`/session/${encodeURIComponent(sessionId)}/summary`);
-    // Any entity the summary doesn't list as unassigned is assigned to
-    // *some* group server-side. If we don't already know which group
-    // (e.g. we didn't just do the assigning ourselves this page-load),
-    // record a placeholder so it's correctly hidden from "Нераспределённые"
-    // rather than incorrectly shown as free.
-    const unassignedSet = new Set(latestSummary.unassigned_entities);
+  async function loadColumn(column) {
+    const state = freshColumnState();
+    const [serverGroups, entities, summary] = await Promise.all([
+      apiFetch(`/session/${encodeURIComponent(sessionId)}/groups/${encodeURIComponent(column)}`),
+      apiFetch(`/session/${encodeURIComponent(sessionId)}/entities/${encodeURIComponent(column)}`),
+      apiFetch(`/session/${encodeURIComponent(sessionId)}/summary/${encodeURIComponent(column)}`),
+    ]);
+    serverGroups.forEach(g => { state.groups[g.id] = { id: g.id, name: g.name, parentId: g.parent_id }; });
+    state.entities = entities;
+    state.latestSummary = summary;
+    const unassignedSet = new Set(summary.unassigned_entities);
     entities.forEach(e => {
-      if (!unassignedSet.has(e.value) && !assignedGroup.has(e.value)) {
-        assignedGroup.set(e.value, '__unknown__');
-      }
+      if (!unassignedSet.has(e.value)) state.assignedGroup.set(e.value, '__unknown__');
     });
+    columnState[column] = state;
+  }
+
+  async function reloadSummary(column) {
+    columnState[column].latestSummary = await apiFetch(
+      `/session/${encodeURIComponent(sessionId)}/summary/${encodeURIComponent(column)}`
+    );
   }
 
   async function init() {
     try {
-      await loadGroups();
-      await loadEntities();
-      await loadSummary();
+      await loadColumnsInfo();
+      await Promise.all(categorizedColumns.map(loadColumn));
     } catch (err) {
       alert('Не удалось загрузить сессию: ' + err.message);
       return;
     }
+    if (dimensionColumns.length) {
+      document.getElementById('breakdownBtn').classList.remove('hidden');
+    }
+    renderTabs();
     render();
   }
 
+  function renderTabs() {
+    const tabsEl = document.getElementById('treeTabs');
+    tabsEl.innerHTML = '';
+    if (categorizedColumns.length <= 1) {
+      tabsEl.classList.add('hidden');
+      return;
+    }
+    tabsEl.classList.remove('hidden');
+    categorizedColumns.forEach(col => {
+      const btn = document.createElement('button');
+      btn.className = 'tree-tab' + (col === activeColumn ? ' active' : '');
+      btn.textContent = col; // textContent — column names come from the uploaded file
+      btn.addEventListener('click', () => {
+        if (activeColumn === col) return;
+        activeColumn = col;
+        closeBreakdown();
+        renderTabs();
+        render();
+      });
+      tabsEl.appendChild(btn);
+    });
+  }
+
   function render() {
+    renderColumnLabels();
     renderEntityList();
     renderTree();
     renderBulkBar();
     renderReconciliation();
   }
 
+  function renderColumnLabels() {
+    document.getElementById('unassignedTitle').textContent =
+      categorizedColumns.length > 1 ? `Нераспределённые — ${activeColumn}` : 'Нераспределённые';
+    document.getElementById('activeColumnLabel').textContent =
+      categorizedColumns.length > 1 ? `Дерево: ${activeColumn}` : '';
+  }
+
   function renderEntityList() {
     const search = document.getElementById('searchBox').value.trim().toLowerCase();
     const list = document.getElementById('entityList');
     list.innerHTML = '';
-    const unassigned = entities.filter(e => !assignedGroup.has(e.value));
+    const state = cur();
+    const unassigned = state.entities.filter(e => !state.assignedGroup.has(e.value));
     document.getElementById('unassignedCount').textContent = unassigned.length;
 
     const filtered = unassigned.filter(e => e.value.toLowerCase().includes(search));
@@ -543,9 +647,9 @@
 
       const checkbox = document.createElement('input');
       checkbox.type = 'checkbox';
-      checkbox.checked = selected.has(e.value);
+      checkbox.checked = state.selected.has(e.value);
       checkbox.addEventListener('change', ev => {
-        if (ev.target.checked) selected.add(e.value); else selected.delete(e.value);
+        if (ev.target.checked) state.selected.add(e.value); else state.selected.delete(e.value);
         renderBulkBar();
       });
 
@@ -572,8 +676,9 @@
   }
 
   function groupTotal(groupId) {
-    if (!latestSummary) return 0;
-    return parseFloat(latestSummary.rollup_totals[groupId] || '0');
+    const state = cur();
+    if (!state.latestSummary) return 0;
+    return parseFloat(state.latestSummary.rollup_totals[groupId] || '0');
   }
 
   function renderTree() {
@@ -585,8 +690,9 @@
     }
     roots.forEach(g => container.appendChild(renderNode(g)));
 
-    if (bulkTargetId && !isLeaf(bulkTargetId)) {
-      bulkTargetId = null;
+    const state = cur();
+    if (state.bulkTargetId && !isLeaf(state.bulkTargetId)) {
+      state.bulkTargetId = null;
       document.getElementById('dropdownLabel').textContent = 'Выберите категорию…';
       document.getElementById('dropdownLabel').classList.add('placeholder');
     }
@@ -595,17 +701,18 @@
 
   function renderDropdownPanel() {
     const panel = document.getElementById('dropdownPanel');
-    const leafGroups = Object.values(groups).filter(g => isLeaf(g.id));
+    const state = cur();
+    const leafGroups = Object.values(state.groups).filter(g => isLeaf(g.id));
     panel.innerHTML = '';
     if (leafGroups.length === 0) {
       panel.innerHTML = '<div class="dropdown-option" style="color: var(--ink-soft); cursor: default;">Сначала создайте категорию</div>';
     }
     leafGroups.forEach(g => {
       const opt = document.createElement('div');
-      opt.className = 'dropdown-option' + (g.id === bulkTargetId ? ' selected' : '');
+      opt.className = 'dropdown-option' + (g.id === state.bulkTargetId ? ' selected' : '');
       opt.textContent = groupPath(g.id).join(' / ');
       opt.addEventListener('click', () => {
-        bulkTargetId = g.id;
+        state.bulkTargetId = g.id;
         document.getElementById('dropdownLabel').textContent = groupPath(g.id).join(' / ');
         document.getElementById('dropdownLabel').classList.remove('placeholder');
         closeDropdown();
@@ -664,7 +771,7 @@
 
   function renderBulkBar() {
     const bar = document.getElementById('bulkBar');
-    const count = selected.size;
+    const count = cur().selected.size;
     document.getElementById('bulkCount').textContent = `Выбрано: ${count}`;
     bar.classList.toggle('visible', count > 0);
     updateSendButtonState();
@@ -672,18 +779,74 @@
 
   function updateSendButtonState() {
     const btn = document.getElementById('bulkSend');
-    btn.disabled = !(selected.size > 0 && bulkTargetId && isLeaf(bulkTargetId));
+    const state = cur();
+    btn.disabled = !(state.selected.size > 0 && state.bulkTargetId && isLeaf(state.bulkTargetId));
   }
 
   function renderReconciliation() {
-    if (!latestSummary) return;
-    document.getElementById('totalFile').textContent = fmt(latestSummary.grand_total);
-    const groupsTotal = parseFloat(latestSummary.grand_total) - parseFloat(latestSummary.unassigned_total);
+    const summary = cur().latestSummary;
+    if (!summary) return;
+    document.getElementById('totalFile').textContent = fmt(summary.grand_total);
+    const groupsTotal = parseFloat(summary.grand_total) - parseFloat(summary.unassigned_total);
     document.getElementById('totalGroups').textContent = fmt(String(groupsTotal));
     const unassignedEl = document.getElementById('totalUnassigned');
-    unassignedEl.textContent = fmt(latestSummary.unassigned_total);
-    unassignedEl.classList.toggle('zero', parseFloat(latestSummary.unassigned_total) === 0);
+    unassignedEl.textContent = fmt(summary.unassigned_total);
+    unassignedEl.classList.toggle('zero', parseFloat(summary.unassigned_total) === 0);
   }
+
+  // ---------- Разбивка (dimension columns x this tree's category path) ----------
+  function closeBreakdown() {
+    document.getElementById('breakdownSection').classList.add('hidden');
+  }
+
+  async function toggleBreakdown() {
+    const section = document.getElementById('breakdownSection');
+    if (!section.classList.contains('hidden')) { closeBreakdown(); return; }
+    let data;
+    try {
+      data = await apiFetch(`/session/${encodeURIComponent(sessionId)}/breakdown/${encodeURIComponent(activeColumn)}`);
+    } catch (err) {
+      alert('Не удалось загрузить разбивку: ' + err.message);
+      return;
+    }
+    document.getElementById('breakdownTitle').textContent = `Разбивка — ${activeColumn}`;
+    renderBreakdownTable(data.rows);
+    section.classList.remove('hidden');
+  }
+
+  function renderBreakdownTable(rows) {
+    const table = document.getElementById('breakdownTable');
+    table.innerHTML = '';
+    if (!rows.length) {
+      table.innerHTML = '<tr><td class="empty-state">Нет данных для разбивки</td></tr>';
+      return;
+    }
+    // Column order comes straight from the server (dimension columns,
+    // then this tree's "Группа N" path columns, then "Сумма") — see
+    // core/export.py::build_breakdown_sheet. JSON object key order in a
+    // fetch() response preserves that.
+    const cols = Object.keys(rows[0]);
+    const thead = document.createElement('tr');
+    cols.forEach(c => {
+      const th = document.createElement('th');
+      th.textContent = c; // textContent — column names come from the uploaded file
+      thead.appendChild(th);
+    });
+    table.appendChild(thead);
+    rows.forEach(r => {
+      const tr = document.createElement('tr');
+      cols.forEach(c => {
+        const td = document.createElement('td');
+        if (c === 'Сумма') { td.className = 'mono'; td.textContent = fmt(r[c]); }
+        else { td.textContent = (r[c] === null || r[c] === undefined) ? '' : String(r[c]); }
+        tr.appendChild(td);
+      });
+      table.appendChild(tr);
+    });
+  }
+
+  document.getElementById('breakdownBtn').addEventListener('click', toggleBreakdown);
+  document.getElementById('closeBreakdownBtn').addEventListener('click', closeBreakdown);
 
   // --- Event wiring ---
   document.getElementById('searchBox').addEventListener('input', renderEntityList);
@@ -696,6 +859,7 @@
     const btn = e.target.closest('button[data-action]');
     if (!btn) return;
     const id = btn.dataset.id;
+    const column = activeColumn;
     if (btn.dataset.action === 'add-sub') {
       const row = btn.closest('.tree-node').querySelector('.tree-node-row');
       showAddForm(id, row, false);
@@ -707,13 +871,16 @@
       // this group from a previous page-load we only know about via the
       // "__unknown__" placeholder.
       try {
-        await apiFetch(`/session/${encodeURIComponent(sessionId)}/groups/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        await apiFetch(
+          `/session/${encodeURIComponent(sessionId)}/groups/${encodeURIComponent(column)}/${encodeURIComponent(id)}`,
+          { method: 'DELETE' }
+        );
       } catch (err) {
         alert(err.message);
         return;
       }
-      delete groups[id];
-      await loadSummary();
+      delete columnState[column].groups[id];
+      await reloadSummary(column);
       render();
     }
   });
@@ -731,12 +898,14 @@
     }
     const input = form.querySelector('input');
     input.focus();
+    const column = activeColumn;
     async function submit() {
       const name = input.value.trim();
       if (!name) return;
-      const groupId = 'g' + (nextGroupId) + '_' + Math.random().toString(36).slice(2, 6);
+      const state = columnState[column];
+      const groupId = 'g' + (state.nextGroupId) + '_' + Math.random().toString(36).slice(2, 6);
       try {
-        await apiFetch(`/session/${encodeURIComponent(sessionId)}/groups`, {
+        await apiFetch(`/session/${encodeURIComponent(sessionId)}/groups/${encodeURIComponent(column)}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ group_id: groupId, name, parent_id: parentId }),
@@ -745,9 +914,9 @@
         alert(err.message);
         return;
       }
-      nextGroupId++;
-      groups[groupId] = { id: groupId, name, parentId };
-      await loadSummary();
+      state.nextGroupId++;
+      state.groups[groupId] = { id: groupId, name, parentId };
+      await reloadSummary(column);
       render();
     }
     form.querySelector('button').addEventListener('click', submit);
@@ -764,34 +933,37 @@
   document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDropdown(); });
 
   document.getElementById('bulkClear').addEventListener('click', () => {
-    selected.clear();
-    bulkTargetId = null;
+    const state = cur();
+    state.selected.clear();
+    state.bulkTargetId = null;
     document.getElementById('dropdownLabel').textContent = 'Выберите категорию…';
     document.getElementById('dropdownLabel').classList.add('placeholder');
     render();
   });
   document.getElementById('bulkSend').addEventListener('click', async () => {
-    if (!bulkTargetId || !isLeaf(bulkTargetId)) return;
-    const entityIds = Array.from(selected);
+    const column = activeColumn;
+    const state = columnState[column];
+    if (!state.bulkTargetId || !isLeaf(state.bulkTargetId)) return;
+    const entityIds = Array.from(state.selected);
     const btn = document.getElementById('bulkSend');
     btn.disabled = true;
     try {
-      await apiFetch(`/session/${encodeURIComponent(sessionId)}/assign`, {
+      await apiFetch(`/session/${encodeURIComponent(sessionId)}/assign/${encodeURIComponent(column)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ entity_ids: entityIds, group_id: bulkTargetId }),
+        body: JSON.stringify({ entity_ids: entityIds, group_id: state.bulkTargetId }),
       });
     } catch (err) {
       alert(err.message);
       btn.disabled = false;
       return;
     }
-    entityIds.forEach(value => assignedGroup.set(value, bulkTargetId));
-    selected.clear();
-    bulkTargetId = null;
+    entityIds.forEach(value => state.assignedGroup.set(value, state.bulkTargetId));
+    state.selected.clear();
+    state.bulkTargetId = null;
     document.getElementById('dropdownLabel').textContent = 'Выберите категорию…';
     document.getElementById('dropdownLabel').classList.add('placeholder');
-    await loadSummary();
+    await reloadSummary(column);
     render();
   });
 

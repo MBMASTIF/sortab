@@ -16,6 +16,8 @@
     --stamp: #E8543D;
     --stamp-dark: #CC4530;
     --ledger-line: #16A76B;
+    --dimension: #4C6FFF;
+    --dimension-dark: #3550CC;
     --rule: #E2E4DE;
     --rule-light: #EDEEE9;
   }
@@ -59,12 +61,14 @@
     transition: border-color 0.15s ease, background 0.15s ease;
   }
   .pick-chip .swatch { width: 11px; height: 11px; border-radius: 3px; flex-shrink: 0; }
-  .pick-chip.entity .swatch { background: var(--ledger-line); }
+  .pick-chip.categorize .swatch { background: var(--ledger-line); }
   .pick-chip.metric .swatch { background: var(--stamp); }
+  .pick-chip.dimension .swatch { background: var(--dimension); }
   .pick-chip .value { font-weight: 600; }
   .pick-chip .placeholder { color: var(--ink-soft); font-weight: 400; }
-  .pick-chip.done.entity { border-color: var(--ledger-line); background: rgba(22,167,107,0.06); }
+  .pick-chip.done.categorize { border-color: var(--ledger-line); background: rgba(22,167,107,0.06); }
   .pick-chip.done.metric { border-color: var(--stamp); background: rgba(232,84,61,0.06); }
+  .pick-chip.done.dimension { border-color: var(--dimension); background: rgba(76,111,255,0.06); }
 
   /* ---------- Preview table ---------- */
   .preview-card {
@@ -90,13 +94,16 @@
   .col-head-inner { display: flex; flex-direction: column; gap: 4px; padding: 2px 0; border-radius: 6px; }
   .col-head .col-name { font-weight: 600; }
   .col-head .col-role { font-size: 11px; color: var(--ink-soft); height: 14px; }
-  .col-head.picked-entity { background: rgba(22,167,107,0.12); }
-  .col-head.picked-entity .col-role { color: var(--ledger-line); font-weight: 600; }
+  .col-head.picked-categorize { background: rgba(22,167,107,0.12); }
+  .col-head.picked-categorize .col-role { color: var(--ledger-line); font-weight: 600; }
   .col-head.picked-metric { background: rgba(232,84,61,0.12); }
   .col-head.picked-metric .col-role { color: var(--stamp-dark); font-weight: 600; }
+  .col-head.picked-dimension { background: rgba(76,111,255,0.12); }
+  .col-head.picked-dimension .col-role { color: var(--dimension-dark); font-weight: 600; }
 
-  td.picked-entity { background: rgba(22,167,107,0.05); }
+  td.picked-categorize { background: rgba(22,167,107,0.05); }
   td.picked-metric { background: rgba(232,84,61,0.05); }
+  td.picked-dimension { background: rgba(76,111,255,0.05); }
 
   tr.header-row-candidate { cursor: pointer; }
   tr.header-row-candidate:hover td { background: var(--paper-raised); }
@@ -191,9 +198,13 @@
 
   <div class="hidden" id="pickWorkspace">
     <div class="pick-row">
-      <div class="pick-chip entity" id="chipEntity">
+      <div class="pick-chip categorize" id="chipCategorize">
         <span class="swatch"></span>
-        <span>Группировать по: <span class="value placeholder" id="chipEntityValue">не выбрано</span></span>
+        <span>Категоризировать (дерево): <span class="value placeholder" id="chipCategorizeValue">не выбрано</span></span>
+      </div>
+      <div class="pick-chip dimension" id="chipDimension">
+        <span class="swatch"></span>
+        <span>Разбивка (без дерева): <span class="value placeholder" id="chipDimensionValue">не выбрано</span></span>
       </div>
       <div class="pick-chip metric" id="chipMetric">
         <span class="swatch"></span>
@@ -231,8 +242,12 @@
   let sessionId = null;
 
   let headerRowIndex = 0;
-  let entityCol = null;
-  let metricCol = null;
+  // per-column role, cycled on click: null -> 'categorize' -> 'dimension'
+  // -> 'metric' -> null. 'categorize' and 'dimension' can be on any
+  // number of columns at once (a session can build several independent
+  // category trees, see core/session.py); 'metric' is singular — picking
+  // it on a new column clears it from wherever it was before.
+  let columnRoles = [];
 
   function headerCells() { return rawRows[headerRowIndex] || []; }
 
@@ -315,12 +330,11 @@
     rawRows = body.preview_rows;
     totalRowCount = body.row_count;
     headerRowIndex = guessHeaderRow(rawRows);
-    entityCol = null;
-    metricCol = null;
+    columnRoles = new Array((rawRows[0] || []).length).fill(null);
 
     document.getElementById('fileNameLabel').textContent = body.filename || file.name;
     document.getElementById('pageTitle').textContent = 'Какие колонки разбирать?';
-    document.getElementById('pageHint').textContent = 'Кликните по строке, где на самом деле начинаются заголовки — а затем по нужным колонкам ниже';
+    document.getElementById('pageHint').textContent = 'Кликните по строке, где на самом деле начинаются заголовки — а затем по колонкам ниже: раз — «категоризировать» (дерево), два — «разбивка» (без дерева), три — «сумма», четыре — сброс';
 
     document.getElementById('uploadZone').classList.add('hidden');
     document.getElementById('pickWorkspace').classList.remove('hidden');
@@ -365,11 +379,9 @@
     headerCells().forEach((label, colIdx) => {
       const th = document.createElement('th');
       th.className = 'col-head';
-      if (colIdx === entityCol) th.classList.add('picked-entity');
-      if (colIdx === metricCol) th.classList.add('picked-metric');
-      let role = '';
-      if (colIdx === entityCol) role = 'Группировка';
-      if (colIdx === metricCol) role = 'Сумма';
+      const role = columnRoles[colIdx];
+      if (role) th.classList.add('picked-' + role);
+      const roleLabel = { categorize: 'Категоризировать', dimension: 'Разбивка', metric: 'Сумма' }[role] || '';
       // Built via DOM APIs, not innerHTML — the label text comes straight
       // from the uploaded file's cell content, which is untrusted input.
       const inner = document.createElement('div');
@@ -379,11 +391,11 @@
       nameSpan.textContent = (label === null || label === undefined || label === '') ? '—' : String(label);
       const roleSpan = document.createElement('span');
       roleSpan.className = 'col-role';
-      roleSpan.textContent = role;
+      roleSpan.textContent = roleLabel;
       inner.appendChild(nameSpan);
       inner.appendChild(roleSpan);
       th.appendChild(inner);
-      th.addEventListener('click', () => pickColumn(colIdx));
+      th.addEventListener('click', () => cycleColumnRole(colIdx));
       thead.appendChild(th);
     });
     table.appendChild(thead);
@@ -397,8 +409,8 @@
       tr.addEventListener('click', () => setHeaderRow(rowIdx));
       row.forEach((cell, colIdx) => {
         const td = document.createElement('td');
-        if (colIdx === entityCol) td.classList.add('picked-entity');
-        if (colIdx === metricCol) td.classList.add('picked-metric');
+        const role = columnRoles[colIdx];
+        if (role) td.classList.add('picked-' + role);
         const cellText = cell === null || cell === undefined ? '' : String(cell);
         if (colIdx === 0 && isDecor) {
           // DOM APIs, not innerHTML — cellText is untrusted file content.
@@ -426,39 +438,66 @@
   function setHeaderRow(rowIdx) {
     if (rowIdx === headerRowIndex) return;
     headerRowIndex = rowIdx;
-    entityCol = null;
-    metricCol = null;
+    columnRoles = columnRoles.map(() => null);
     render();
   }
 
-  function pickColumn(colIdx) {
-    if (entityCol === colIdx) { entityCol = null; render(); return; }
-    if (metricCol === colIdx) { metricCol = null; render(); return; }
-    if (entityCol === null) { entityCol = colIdx; }
-    else if (metricCol === null) { metricCol = colIdx; }
-    else { entityCol = colIdx; }
+  function cycleColumnRole(colIdx) {
+    const current = columnRoles[colIdx];
+    const next = current === null ? 'categorize'
+      : current === 'categorize' ? 'dimension'
+      : current === 'dimension' ? 'metric'
+      : null;
+    if (next === 'metric') {
+      // metric is singular — picking it here clears it from wherever it
+      // was before (categorize/dimension stay multi-valued, no such clear).
+      columnRoles = columnRoles.map(r => r === 'metric' ? null : r);
+    }
+    columnRoles[colIdx] = next;
     render();
+  }
+
+  function columnsWithRole(role) {
+    return columnRoles.map((r, i) => r === role ? i : -1).filter(i => i >= 0);
   }
 
   function updateChips() {
     const cells = headerCells();
-    const entityChip = document.getElementById('chipEntity');
+    const nameOf = i => (cells[i] === null || cells[i] === undefined || cells[i] === '') ? `Колонка ${i + 1}` : String(cells[i]);
+
+    const categorizeIdx = columnsWithRole('categorize');
+    const dimensionIdx = columnsWithRole('dimension');
+    const metricIdx = columnsWithRole('metric');
+
+    const categorizeChip = document.getElementById('chipCategorize');
+    const dimensionChip = document.getElementById('chipDimension');
     const metricChip = document.getElementById('chipMetric');
-    const entityVal = document.getElementById('chipEntityValue');
+    const categorizeVal = document.getElementById('chipCategorizeValue');
+    const dimensionVal = document.getElementById('chipDimensionValue');
     const metricVal = document.getElementById('chipMetricValue');
 
-    if (entityCol !== null) {
-      entityVal.textContent = cells[entityCol];
-      entityVal.classList.remove('placeholder');
-      entityChip.classList.add('done');
+    if (categorizeIdx.length) {
+      categorizeVal.textContent = categorizeIdx.map(nameOf).join(', ');
+      categorizeVal.classList.remove('placeholder');
+      categorizeChip.classList.add('done');
     } else {
-      entityVal.textContent = 'не выбрано';
-      entityVal.classList.add('placeholder');
-      entityChip.classList.remove('done');
+      categorizeVal.textContent = 'не выбрано';
+      categorizeVal.classList.add('placeholder');
+      categorizeChip.classList.remove('done');
     }
 
-    if (metricCol !== null) {
-      metricVal.textContent = cells[metricCol];
+    if (dimensionIdx.length) {
+      dimensionVal.textContent = dimensionIdx.map(nameOf).join(', ');
+      dimensionVal.classList.remove('placeholder');
+      dimensionChip.classList.add('done');
+    } else {
+      dimensionVal.textContent = 'нет (необязательно)';
+      dimensionVal.classList.add('placeholder');
+      dimensionChip.classList.remove('done');
+    }
+
+    if (metricIdx.length) {
+      metricVal.textContent = nameOf(metricIdx[0]);
       metricVal.classList.remove('placeholder');
       metricChip.classList.add('done');
     } else {
@@ -469,19 +508,22 @@
 
     const status = document.getElementById('continueStatus');
     const btn = document.getElementById('continueBtn');
-    if (entityCol !== null && metricCol !== null) {
+    if (categorizeIdx.length >= 1 && metricIdx.length === 1) {
       const dataRows = totalRowCount - 1 - headerRowIndex;
-      status.innerHTML = `Строк данных: <span class="mono">${dataRows}</span>`;
+      status.innerHTML = `Деревьев: <span class="mono">${categorizeIdx.length}</span> · строк данных: <span class="mono">${dataRows}</span>`;
       btn.classList.remove('is-disabled');
     } else {
-      status.textContent = 'Выберите обе колонки';
+      status.textContent = 'Выберите минимум 1 колонку «категоризировать» и колонку «сумма»';
       btn.classList.add('is-disabled');
     }
   }
 
   // ---------- Continue: POST /api/session/{id}/columns, then redirect ----------
   document.getElementById('continueBtn').addEventListener('click', async () => {
-    if (entityCol === null || metricCol === null || !sessionId) return;
+    const categorizeIdx = columnsWithRole('categorize');
+    const dimensionIdx = columnsWithRole('dimension');
+    const metricIdx = columnsWithRole('metric');
+    if (categorizeIdx.length < 1 || metricIdx.length !== 1 || !sessionId) return;
     const btn = document.getElementById('continueBtn');
     btn.classList.add('is-disabled');
     btn.textContent = 'Сохраняем…';
@@ -493,8 +535,9 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           header_row_index: headerRowIndex,
-          entity_column: entityCol,
-          metric_column: metricCol,
+          categorized_columns: categorizeIdx,
+          metric_column: metricIdx[0],
+          dimension_columns: dimensionIdx,
         }),
       });
     } catch (err) {
@@ -526,7 +569,18 @@
         });
         if (loadResp.ok) {
           const loadBody = await loadResp.json();
-          alert(`Словарь проекта применён: ${loadBody.known_entities_count} значений распознаны автоматически, ${loadBody.new_entities_count} новых нужно распределить вручную.`);
+          // The project can hold more than one tree (one per categorized
+          // column) — summarize across all of them rather than assuming
+          // exactly one, see backend/main.py::load_project_into_session.
+          const perColumn = loadBody.columns || {};
+          const columnNames = Object.keys(perColumn);
+          if (columnNames.length) {
+            const totalKnown = columnNames.reduce((sum, c) => sum + perColumn[c].known_entities_count, 0);
+            const totalNew = columnNames.reduce((sum, c) => sum + perColumn[c].new_entities_count, 0);
+            alert(`Словарь проекта применён (${columnNames.join(', ')}): ${totalKnown} значений распознаны автоматически, ${totalNew} новых нужно распределить вручную.`);
+          } else {
+            alert('У этого проекта нет колонок, совпадающих с выбранными сейчас — дерево останется пустым.');
+          }
         } else {
           const loadErrBody = await loadResp.json().catch(() => ({}));
           alert('Не удалось применить словарь проекта: ' + (loadErrBody.detail || loadResp.status) + ' — продолжаем с пустым деревом.');
