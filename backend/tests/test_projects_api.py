@@ -9,8 +9,11 @@ build a tree, save it as a Project, then re-upload a DIFFERENT file for
 the same Project and confirm previously-assigned entities are recognized
 automatically while genuinely new ones still require manual sorting (via
 core.tree.detect_new_entities, exercised through the real HTTP endpoint).
-Also covers the required failure paths: no cookie -> 401, unknown project
--> 404, and the free-tier "1 project" limit -> 409 (not a silent no-op).
+Also covers a Project holding MORE THAN ONE independent tree (a session
+that categorized two columns at once) — both trees must round-trip
+through save/reload correctly, matched back by column name. Also covers
+the required failure paths: no cookie -> 401, unknown project -> 404, and
+the free-tier "1 project" limit -> 409 (not a silent no-op).
 """
 
 from decimal import Decimal
@@ -57,7 +60,7 @@ def _xlsx_bytes(rows: list[list[str]]) -> bytes:
 
 def _upload_and_finalize(client, rows: list[list[str]]) -> str:
     """rows[0] is the header — uploads, then immediately picks
-    header_row_index=0, entity_column=0, metric_column=1."""
+    header_row_index=0, categorized_columns=[0] (Товар), metric_column=1."""
     resp = client.post(
         "/api/upload",
         files={"file": ("report.xlsx", _xlsx_bytes(rows), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
@@ -67,7 +70,7 @@ def _upload_and_finalize(client, rows: list[list[str]]) -> str:
 
     columns_resp = client.post(
         f"/api/session/{session_id}/columns",
-        json={"header_row_index": 0, "entity_column": 0, "metric_column": 1},
+        json={"header_row_index": 0, "categorized_columns": [0], "metric_column": 1},
     )
     assert columns_resp.status_code == 200, columns_resp.text
     return session_id
@@ -142,14 +145,14 @@ def test_full_project_lifecycle_and_reupload_reuses_dictionary(client):
 
     client.post("/api/auth/identify", json={"email": "owner@example.com"})
 
-    client.post(f"/api/session/{session_id}/groups", json={"group_id": "shoes", "name": "Обувь"})
-    client.post(f"/api/session/{session_id}/groups", json={"group_id": "socks", "name": "Носки"})
+    client.post(f"/api/session/{session_id}/groups/Товар", json={"group_id": "shoes", "name": "Обувь"})
+    client.post(f"/api/session/{session_id}/groups/Товар", json={"group_id": "socks", "name": "Носки"})
     assert client.post(
-        f"/api/session/{session_id}/assign",
+        f"/api/session/{session_id}/assign/Товар",
         json={"entity_ids": ["ботинки зимние"], "group_id": "shoes"},
     ).status_code == 200
     assert client.post(
-        f"/api/session/{session_id}/assign",
+        f"/api/session/{session_id}/assign/Товар",
         json={"entity_ids": ["носки чёрные"], "group_id": "socks"},
     ).status_code == 200
     # "шапка вязаная" is deliberately left unassigned
@@ -159,6 +162,7 @@ def test_full_project_lifecycle_and_reupload_reuses_dictionary(client):
     project = create_resp.json()
     assert project["name"] == "Отчёт WB"
     assert project["groups_count"] == 2
+    assert project["categorized_columns"] == ["Товар"]
     project_id = project["id"]
 
     # --- free-tier limit: a second project is a 409, not a silent 500/no-op
@@ -185,12 +189,13 @@ def test_full_project_lifecycle_and_reupload_reuses_dictionary(client):
     load_resp = client.post(f"/api/session/{new_session_id}/load-project/{project_id}")
     assert load_resp.status_code == 200, load_resp.text
     load_body = load_resp.json()
-    assert load_body["known_entities_count"] == 2  # носки чёрные, ботинки зимние
-    assert load_body["new_entities_count"] == 2
-    assert sorted(load_body["new_entities"]) == ["трусы муж.", "шапка вязаная"]
+    column_result = load_body["columns"]["Товар"]
+    assert column_result["known_entities_count"] == 2  # носки чёрные, ботинки зимние
+    assert column_result["new_entities_count"] == 2
+    assert sorted(column_result["new_entities"]) == ["трусы муж.", "шапка вязаная"]
 
     # --- entities list reflects is_new correctly post-load
-    entities = {e["value"]: e for e in client.get(f"/api/session/{new_session_id}/entities").json()}
+    entities = {e["value"]: e for e in client.get(f"/api/session/{new_session_id}/entities/Товар").json()}
     assert entities["носки чёрные"]["is_new"] is False
     assert entities["ботинки зимние"]["is_new"] is False
     assert entities["шапка вязаная"]["is_new"] is True
@@ -198,14 +203,14 @@ def test_full_project_lifecycle_and_reupload_reuses_dictionary(client):
 
     # --- known entities are already assigned to their old groups; the
     # reconciliation math already reflects that, no manual re-sort needed
-    summary = client.get(f"/api/session/{new_session_id}/summary").json()
+    summary = client.get(f"/api/session/{new_session_id}/summary/Товар").json()
     assert Decimal(summary["rollup_totals"]["shoes"]) == Decimal("31000")
     assert Decimal(summary["rollup_totals"]["socks"]) == Decimal("5000")
     assert sorted(summary["unassigned_entities"]) == ["трусы муж.", "шапка вязаная"]
     assert Decimal(summary["unassigned_total"]) == Decimal("9200") + Decimal("3400")
 
-    # --- the group tree itself carried over too (GET /groups, task #1)
-    groups = {g["id"]: g for g in client.get(f"/api/session/{new_session_id}/groups").json()}
+    # --- the group tree itself carried over too (GET /groups/{column}, task #1)
+    groups = {g["id"]: g for g in client.get(f"/api/session/{new_session_id}/groups/Товар").json()}
     assert set(groups) == {"shoes", "socks"}
 
 
@@ -214,3 +219,92 @@ def test_load_project_unknown_project_is_404(client):
     client.post("/api/auth/identify", json={"email": "x@example.com"})
     resp = client.post(f"/api/session/{session_id}/load-project/00000000-0000-0000-0000-000000000000")
     assert resp.status_code == 404
+
+
+MULTI_TREE_FILE = [
+    ["Товар", "Клиент", "Сумма"],
+    ["носки чёрные", "ООО Ромашка", "4500"],
+    ["ботинки зимние", "ИП Сидоров", "32000"],
+    ["шапка вязаная", "ООО Вектор", "8900"],
+]
+
+MULTI_TREE_FILE_B = [
+    ["Товар", "Клиент", "Сумма"],
+    ["носки чёрные", "ООО Ромашка", "5000"],
+    ["ботинки зимние", "ИП Сидоров", "31000"],
+    ["новый товар", "Новый клиент", "1000"],
+]
+
+
+def test_project_with_two_independent_trees_round_trips_both(client):
+    """A Project can be saved from a session that categorized TWO columns
+    at once — both trees must survive save + reload, matched back onto
+    the new session by column name, independently of each other."""
+    resp = client.post(
+        "/api/upload",
+        files={
+            "file": (
+                "report.xlsx",
+                _xlsx_bytes(MULTI_TREE_FILE),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+    session_id = resp.json()["session_id"]
+    columns_resp = client.post(
+        f"/api/session/{session_id}/columns",
+        json={"header_row_index": 0, "categorized_columns": [0, 1], "metric_column": 2},
+    )
+    assert columns_resp.status_code == 200, columns_resp.text
+
+    client.post("/api/auth/identify", json={"email": "two-trees@example.com"})
+
+    client.post(f"/api/session/{session_id}/groups/Товар", json={"group_id": "socks", "name": "Носки"})
+    client.post(
+        f"/api/session/{session_id}/assign/Товар",
+        json={"entity_ids": ["носки чёрные", "ботинки зимние"], "group_id": "socks"},
+    )
+    client.post(f"/api/session/{session_id}/groups/Клиент", json={"group_id": "big", "name": "Крупные"})
+    client.post(
+        f"/api/session/{session_id}/assign/Клиент",
+        json={"entity_ids": ["ООО Ромашка", "ИП Сидоров"], "group_id": "big"},
+    )
+
+    create_resp = client.post("/api/projects", json={"session_id": session_id, "name": "Два дерева"})
+    assert create_resp.status_code == 201, create_resp.text
+    project = create_resp.json()
+    assert project["categorized_columns"] == ["Товар", "Клиент"]
+    assert project["groups_count"] == 2  # 1 group in each tree
+    project_id = project["id"]
+
+    # --- re-upload a new file for the same project, load both dictionaries
+    resp_b = client.post(
+        "/api/upload",
+        files={
+            "file": (
+                "report_b.xlsx",
+                _xlsx_bytes(MULTI_TREE_FILE_B),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+    )
+    session_b = resp_b.json()["session_id"]
+    client.post(
+        f"/api/session/{session_b}/columns",
+        json={"header_row_index": 0, "categorized_columns": [0, 1], "metric_column": 2},
+    )
+
+    load_resp = client.post(f"/api/session/{session_b}/load-project/{project_id}")
+    assert load_resp.status_code == 200, load_resp.text
+    columns_result = load_resp.json()["columns"]
+    assert set(columns_result) == {"Товар", "Клиент"}
+    assert columns_result["Товар"]["new_entities"] == ["новый товар"]
+    assert columns_result["Клиент"]["new_entities"] == ["Новый клиент"]
+
+    tovar_summary = client.get(f"/api/session/{session_b}/summary/Товар").json()
+    assert Decimal(tovar_summary["rollup_totals"]["socks"]) == Decimal("5000") + Decimal("31000")
+    assert tovar_summary["unassigned_entities"] == ["новый товар"]
+
+    client_summary = client.get(f"/api/session/{session_b}/summary/Клиент").json()
+    assert Decimal(client_summary["rollup_totals"]["big"]) == Decimal("5000") + Decimal("31000")
+    assert client_summary["unassigned_entities"] == ["Новый клиент"]

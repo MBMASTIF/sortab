@@ -35,7 +35,13 @@ from backend.auth import (
     create_auth_token,
     resolve_user_id,
 )
-from backend.columns import ColumnMappingError, finalize_columns, promote_header_row, resolve_unpivot_columns
+from backend.columns import (
+    ColumnMappingError,
+    finalize_columns,
+    finalize_pipeline_columns,
+    promote_header_row,
+    resolve_unpivot_columns,
+)
 from backend.db import get_engine
 from backend.projects_store import (
     ProjectLimitError,
@@ -43,7 +49,7 @@ from backend.projects_store import (
     create_project,
     get_or_create_user,
     get_project,
-    get_project_tree,
+    get_project_trees,
     list_projects,
 )
 from backend.session_store import (
@@ -55,12 +61,19 @@ from backend.session_store import (
 )
 from backend.tools_store import ToolFileStore, ToolTokenNotFoundError
 from core.compare import compare_entities
-from core.export import build_detail_sheet, build_summary_sheet, export_single_sheet, export_workbook
+from core.export import (
+    build_breakdown_sheet,
+    build_detail_sheet,
+    build_multi_tree_detail_sheet,
+    build_summary_sheet,
+    export_single_sheet,
+    export_workbook,
+)
 from core.mailmerge import MailMergeError, build_row_dicts, render_pdf as render_mailmerge_pdf, render_text, validate_template
 from core.parsing import UnsupportedFileError, parse_file_raw
 from core.pdf_split import SplitError, split_by_marker
 from core.session import Session, SessionError
-from core.tree import GroupNotEmptyError, NotALeafError, TreeError
+from core.tree import GroupNotEmptyError, NotALeafError, TreeError, TreeStore
 from core.unpivot import UnpivotError, unpivot_table
 from core.watermark import WatermarkError, add_watermark
 
@@ -109,8 +122,15 @@ def require_user(request: Request, redis_conn: Redis = Depends(get_redis)) -> st
 
 class ColumnsRequest(BaseModel):
     header_row_index: int
-    entity_column: int
+    # One or more columns to build an independent category tree for (see
+    # core/session.py — a session can categorize several columns at once,
+    # e.g. "Товар" AND "Клиент" in the same report, each with its own tree).
+    categorized_columns: list[int]
     metric_column: int
+    # Raw "разбивка" columns — no tree, just carried through as context
+    # (e.g. "Менеджер"). Optional, any number, never overlaps with
+    # categorized_columns or metric_column.
+    dimension_columns: list[int] = []
 
 
 class CreateGroupRequest(BaseModel):
@@ -216,45 +236,70 @@ def set_columns(session_id: str, body: ColumnsRequest, redis_conn: Redis = Depen
     raw_df = envelope.session.df
 
     try:
-        data_df, entity_col_name, metric_col_name = finalize_columns(
-            raw_df, body.header_row_index, body.entity_column, body.metric_column
+        data_df, categorized_names, metric_name, dimension_names = finalize_pipeline_columns(
+            raw_df, body.header_row_index, body.categorized_columns, body.metric_column, body.dimension_columns
         )
     except ColumnMappingError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    session = Session(df=data_df, tree=envelope.session.tree)
+    session = Session(df=data_df)
+    # Reuse whichever trees/known-entities already exist (by column name)
+    # from the previous /columns call on this same session, so re-picking
+    # columns mid-session doesn't silently discard in-progress work for a
+    # column whose role didn't change.
+    session.trees = {col: envelope.session.trees.get(col, TreeStore()) for col in categorized_names}
+    session._previously_known_entities = dict(envelope.session._previously_known_entities)
     try:
-        session.set_columns(entity_col_name, metric_col_name)
+        session.set_columns(categorized_names, metric_name, dimension_names)
     except SessionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    session._previously_known_entities = envelope.session._previously_known_entities
 
     save_session(redis_conn, session_id, session, finalized=True, header_row_index=body.header_row_index)
 
     return {
-        "entity_column": entity_col_name,
-        "metric_column": metric_col_name,
+        "categorized_columns": categorized_names,
+        "metric_column": metric_name,
+        "dimension_columns": dimension_names,
         "row_count": data_df.height,
     }
 
 
-@app.get("/api/session/{session_id}/entities")
-def get_entities(session_id: str, redis_conn: Redis = Depends(get_redis)):
+@app.get("/api/session/{session_id}/columns")
+def get_columns(session_id: str, redis_conn: Redis = Depends(get_redis)):
+    """Lets a client (design-prototype/app.html, after the upload.html ->
+    app.html redirect) rediscover which columns this session categorizes
+    — needed to build one tab per categorized column without smuggling
+    that list through the URL."""
+    envelope = _load_or_404(redis_conn, session_id)
+    _require_finalized(envelope)
+    return {
+        "categorized_columns": envelope.session.categorized_columns,
+        "metric_column": envelope.session.metric_column,
+        "dimension_columns": envelope.session.dimension_columns,
+    }
+
+
+@app.get("/api/session/{session_id}/entities/{column}")
+def get_entities(session_id: str, column: str, redis_conn: Redis = Depends(get_redis)):
     envelope = _load_or_404(redis_conn, session_id)
     _require_finalized(envelope)
 
-    return [
-        {"value": e.value, "occurrences": e.occurrences, "is_new": e.is_new}
-        for e in envelope.session.unique_entities()
-    ]
+    try:
+        entities = envelope.session.unique_entities(column)
+    except SessionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return [{"value": e.value, "occurrences": e.occurrences, "is_new": e.is_new} for e in entities]
 
 
-@app.post("/api/session/{session_id}/groups", status_code=201)
-def create_group(session_id: str, body: CreateGroupRequest, redis_conn: Redis = Depends(get_redis)):
+@app.post("/api/session/{session_id}/groups/{column}", status_code=201)
+def create_group(session_id: str, column: str, body: CreateGroupRequest, redis_conn: Redis = Depends(get_redis)):
     envelope = _load_or_404(redis_conn, session_id)
 
     try:
-        group = envelope.session.create_group(body.group_id, body.name, body.parent_id)
+        group = envelope.session.create_group(column, body.group_id, body.name, body.parent_id)
+    except SessionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except TreeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -263,25 +308,31 @@ def create_group(session_id: str, body: CreateGroupRequest, redis_conn: Redis = 
     return {"id": group.id, "name": group.name, "parent_id": group.parent_id}
 
 
-@app.get("/api/session/{session_id}/groups")
-def get_groups(session_id: str, redis_conn: Redis = Depends(get_redis)):
-    """Lets a client re-derive the group tree after a hard page reload —
-    the tree lives in Redis via session.tree, it was just never exposed
-    over HTTP before. See design-prototype/app.html's init(), which used
-    to rebuild the tree from nothing but its own in-memory JS state and
-    lost it on refresh."""
+@app.get("/api/session/{session_id}/groups/{column}")
+def get_groups(session_id: str, column: str, redis_conn: Redis = Depends(get_redis)):
+    """Lets a client re-derive one column's group tree after a hard page
+    reload — the tree lives in Redis via session.trees[column]. Each
+    categorized column has its own independent tree (see core/session.py),
+    so the client asks for one tab's tree at a time."""
     envelope = _load_or_404(redis_conn, session_id)
-    return [
-        {"id": g.id, "parent_id": g.parent_id, "name": g.name} for g in envelope.session.tree.as_group_list()
-    ]
+    try:
+        tree = envelope.session.tree_for(column)
+    except SessionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return [{"id": g.id, "parent_id": g.parent_id, "name": g.name} for g in tree.as_group_list()]
 
 
-@app.delete("/api/session/{session_id}/groups/{group_id}", status_code=204)
-def delete_group(session_id: str, group_id: str, redis_conn: Redis = Depends(get_redis)):
+@app.delete("/api/session/{session_id}/groups/{column}/{group_id}", status_code=204)
+def delete_group(session_id: str, column: str, group_id: str, redis_conn: Redis = Depends(get_redis)):
     envelope = _load_or_404(redis_conn, session_id)
 
     try:
-        envelope.session.tree.remove_group(group_id)
+        tree = envelope.session.tree_for(column)
+    except SessionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    try:
+        tree.remove_group(group_id)
     except GroupNotEmptyError as exc:
         # A 409, not a bare 500 — expected, recoverable user action, not a
         # server fault. core.tree's own exception text is English (dev/test
@@ -296,13 +347,15 @@ def delete_group(session_id: str, group_id: str, redis_conn: Redis = Depends(get
     save_session(redis_conn, session_id, envelope.session, envelope.finalized, envelope.header_row_index)
 
 
-@app.post("/api/session/{session_id}/assign")
-def assign_entities(session_id: str, body: AssignRequest, redis_conn: Redis = Depends(get_redis)):
+@app.post("/api/session/{session_id}/assign/{column}")
+def assign_entities(session_id: str, column: str, body: AssignRequest, redis_conn: Redis = Depends(get_redis)):
     envelope = _load_or_404(redis_conn, session_id)
     _require_finalized(envelope)
 
     try:
-        envelope.session.assign(body.entity_ids, body.group_id)
+        envelope.session.assign(column, body.entity_ids, body.group_id)
+    except SessionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except NotALeafError as exc:
         raise HTTPException(
             status_code=409,
@@ -313,23 +366,62 @@ def assign_entities(session_id: str, body: AssignRequest, redis_conn: Redis = De
 
     save_session(redis_conn, session_id, envelope.session, envelope.finalized, envelope.header_row_index)
 
-    return {"assigned": len(body.entity_ids), "group_id": body.group_id}
+    return {"assigned": len(body.entity_ids), "group_id": body.group_id, "column": column}
 
 
-@app.get("/api/session/{session_id}/summary")
-def get_summary(session_id: str, redis_conn: Redis = Depends(get_redis)):
+@app.get("/api/session/{session_id}/summary/{column}")
+def get_summary(session_id: str, column: str, redis_conn: Redis = Depends(get_redis)):
+    """Reconciliation for ONE tree — "Итого = По группам + Не
+    распределено" holds independently per categorized column, since each
+    tree partitions the SAME rows differently (see core/session.py::
+    current_summary and its docstring)."""
     envelope = _load_or_404(redis_conn, session_id)
     _require_finalized(envelope)
 
-    result = envelope.session.current_summary()
-    groups = envelope.session.tree.as_group_list()
+    try:
+        result = envelope.session.current_summary(column)
+        groups = envelope.session.tree_for(column).as_group_list()
+    except SessionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     return {
+        "column": column,
         "direct_totals": {k: _decimal_str(v) for k, v in result.direct_totals.items()},
         "rollup_totals": {k: _decimal_str(v) for k, v in result.rollup_totals.items()},
         "unassigned_total": _decimal_str(result.unassigned_total),
         "unassigned_entities": sorted({r.entity for r in result.unassigned_rows}),
         "grand_total": _decimal_str(result.grand_total(groups)),
+    }
+
+
+@app.get("/api/session/{session_id}/breakdown/{column}")
+def get_breakdown(session_id: str, column: str, redis_conn: Redis = Depends(get_redis)):
+    """Разбивка: this column's tree's group path crossed with the
+    session's raw "разбивка" (dimension) columns — e.g. Менеджер -> Клиент
+    -> сумма per Товар category, for the Товар tree specifically. A purely
+    additional cut; see core/export.py::build_breakdown_sheet for why this
+    never touches the actual reconciliation math."""
+    envelope = _load_or_404(redis_conn, session_id)
+    _require_finalized(envelope)
+    session = envelope.session
+
+    try:
+        tree = session.tree_for(column)
+    except SessionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    breakdown_df = build_breakdown_sheet(
+        session.df,
+        column,
+        session.metric_column,
+        session.dimension_columns,
+        tree.assignment,
+        tree.as_group_list(),
+    )
+    return {
+        "column": column,
+        "dimension_columns": session.dimension_columns,
+        "rows": breakdown_df.to_dicts(),
     }
 
 
@@ -339,15 +431,47 @@ def export_session(session_id: str, redis_conn: Redis = Depends(get_redis)):
     _require_finalized(envelope)
 
     session = envelope.session
-    groups = session.tree.as_group_list()
-    result = session.current_summary()
+    first_col, *rest_cols = session.categorized_columns
 
-    detail_df = build_detail_sheet(session.df, session.entity_column, session.tree.assignment, groups)
-    summary_df = build_summary_sheet(result, groups)
+    detail_df = build_multi_tree_detail_sheet(
+        session.df, session.categorized_columns, session.trees, dimension_columns=session.dimension_columns
+    )
+
+    first_tree = session.trees[first_col]
+    first_result = session.current_summary(first_col)
+    summary_df = build_summary_sheet(first_result, first_tree.as_group_list())
+
+    extra_summary_sheets: dict[str, pl.DataFrame] = {}
+    for col in rest_cols:
+        tree = session.trees[col]
+        result = session.current_summary(col)
+        extra_summary_sheets[f"Итоги — {col}"] = build_summary_sheet(result, tree.as_group_list())
+
+    breakdown_df = None
+    extra_breakdown_sheets: dict[str, pl.DataFrame] = {}
+    if session.dimension_columns:
+        breakdown_df = build_breakdown_sheet(
+            session.df,
+            first_col,
+            session.metric_column,
+            session.dimension_columns,
+            first_tree.assignment,
+            first_tree.as_group_list(),
+        )
+        for col in rest_cols:
+            tree = session.trees[col]
+            extra_breakdown_sheets[f"Разбивка — {col}"] = build_breakdown_sheet(
+                session.df,
+                col,
+                session.metric_column,
+                session.dimension_columns,
+                tree.assignment,
+                tree.as_group_list(),
+            )
 
     tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
     tmp.close()
-    export_workbook(tmp.name, detail_df, summary_df)
+    export_workbook(tmp.name, detail_df, summary_df, breakdown_df, extra_summary_sheets, extra_breakdown_sheets)
 
     return FileResponse(
         tmp.name,
@@ -411,9 +535,9 @@ def save_project(
             engine,
             user_id,
             name,
-            session.entity_column,
+            session.categorized_columns,
             session.metric_column,
-            session.tree,
+            session.trees,
         )
     except ProjectLimitError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -440,51 +564,64 @@ def load_project_into_session(
     redis_conn: Redis = Depends(get_redis),
     engine: Engine = Depends(get_db),
 ):
-    """The actual point of the whole Projects feature: pull a saved
-    tree+dictionary into a freshly-uploaded working session, BEFORE the
-    user starts sorting anything, so only genuinely new entities need
-    manual attention this time around.
+    """The actual point of the whole Projects feature: pull a saved set of
+    tree(s)+dictionaries into a freshly-uploaded working session, BEFORE
+    the user starts sorting anything, so only genuinely new entities need
+    manual attention this time around. A Project can hold more than one
+    independent tree (see backend/projects_store.py::get_project_trees) —
+    each is matched back onto this session's tree for the SAME column
+    name; a saved column this session's file doesn't have (or didn't
+    choose to categorize) is skipped, not an error, so the rest of the
+    project's dictionaries can still apply.
 
-    Must run after /columns (the session needs entity_column resolved to
-    know the current file's unique entity values) and before the user
-    touches the tree UI — loading later would silently discard whatever
-    tree they'd already started building in this session.
+    Must run after /columns (the session needs its categorized columns
+    resolved to know the current file's unique entity values per column)
+    and before the user touches the tree UI — loading later would
+    silently discard whatever tree(s) they'd already started building in
+    this session.
     """
     envelope = _load_or_404(redis_conn, session_id)
     _require_finalized(envelope)
 
     try:
-        tree = get_project_tree(engine, user_id, project_id)
+        project_trees = get_project_trees(engine, user_id, project_id)
     except ProjectNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     session = envelope.session
-    # "Known" = every entity the project's dictionary has ever assigned a
-    # group to. Anything else in the newly-uploaded file is genuinely new
-    # to this project and needs a human to sort it — core.tree's own
-    # detect_new_entities() is the single source of truth for that split,
-    # not a hand-rolled set difference here.
-    previously_known = set(tree.assignment.keys())
-    current_entities = sorted({v for v in session.df[session.entity_column].to_list() if v is not None})
-    new_entities = tree.detect_new_entities(current_entities, previously_known)
+    columns_result: dict[str, dict] = {}
+    for column, tree in project_trees.items():
+        if column not in session.categorized_columns:
+            continue
 
-    session.tree = tree
-    # Only the project's OWN dictionary counts as "known" here — NOT the
-    # full current_entities list. Entities that are new to the project
-    # must keep is_new=True (see core.session.Session.unique_entities)
-    # until the user actually assigns them, which is what shows the
-    # "новое" badge in the UI and is exactly the signal this endpoint's
-    # response surfaces below.
-    session._previously_known_entities = previously_known
+        # "Known" = every entity the project's dictionary has ever
+        # assigned a group to, for THIS column specifically. Anything else
+        # in the newly-uploaded file is genuinely new to this project and
+        # needs a human to sort it — core.tree's own detect_new_entities()
+        # is the single source of truth for that split, not a hand-rolled
+        # set difference here.
+        previously_known = set(tree.assignment.keys())
+        current_entities = sorted({v for v in session.df[column].to_list() if v is not None})
+        new_entities = tree.detect_new_entities(current_entities, previously_known)
+
+        session.trees[column] = tree
+        # Only the project's OWN dictionary counts as "known" here — NOT
+        # the full current_entities list. Entities that are new to the
+        # project must keep is_new=True (see core.session.Session.
+        # unique_entities) until the user actually assigns them, which is
+        # what shows the "новое" badge in the UI and is exactly the signal
+        # this endpoint's response surfaces below.
+        session._previously_known_entities[column] = previously_known
+
+        columns_result[column] = {
+            "known_entities_count": len(current_entities) - len(new_entities),
+            "new_entities": new_entities,
+            "new_entities_count": len(new_entities),
+        }
 
     save_session(redis_conn, session_id, session, envelope.finalized, envelope.header_row_index)
 
-    return {
-        "project_id": project_id,
-        "known_entities_count": len(current_entities) - len(new_entities),
-        "new_entities": new_entities,
-        "new_entities_count": len(new_entities),
-    }
+    return {"project_id": project_id, "columns": columns_result}
 
 
 # ---------------------------------------------------------------------

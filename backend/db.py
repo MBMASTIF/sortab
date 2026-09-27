@@ -46,8 +46,16 @@ projects = sa.Table(
     sa.Column("id", sa.String(36), primary_key=True),
     sa.Column("user_id", sa.String(36), sa.ForeignKey("users.id"), nullable=False),
     sa.Column("name", sa.String(255), nullable=False),
+    # entity_column is kept = categorized_columns[0] for back-compat display
+    # (e.g. the project list card) now that a Project can hold more than
+    # one independent category tree — see categorized_columns below for
+    # the full list, in the same tab order the session used.
     sa.Column("entity_column", sa.String(255), nullable=False),
     sa.Column("metric_column", sa.String(255), nullable=False),
+    sa.Column("categorized_columns", _JSON_VARIANT, nullable=False),
+    # {column_name: {"groups": [...], "assignment": {...}}} — one
+    # tree_serialization.tree_to_dict() blob per categorized column,
+    # keyed by column name (was a single tree's dict before this phase).
     sa.Column("tree_json", _JSON_VARIANT, nullable=False),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),

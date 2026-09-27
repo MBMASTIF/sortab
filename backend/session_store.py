@@ -1,19 +1,23 @@
 """Redis-backed persistence for core.session.Session across HTTP requests.
 
-core.session.Session holds a Polars DataFrame plus an in-memory TreeStore —
-neither survives past a single Python process, and HTTP is stateless, so
-the API layer needs a way to round-trip a Session through Redis between
-requests. Each session is stored as a single Redis hash with two fields:
+core.session.Session holds a Polars DataFrame plus one in-memory TreeStore
+PER categorized column — neither survives past a single Python process,
+and HTTP is stateless, so the API layer needs a way to round-trip a
+Session through Redis between requests. Each session is stored as a single
+Redis hash with two fields:
 
 - "df": the DataFrame as Arrow IPC bytes (pl.DataFrame.write_ipc /
   pl.read_ipc via a BytesIO buffer) — near-zero (de)serialization cost,
   the standard way to move a Polars DataFrame through a byte store.
 - "meta": everything else, as JSON — whether columns have been finalized
-  yet, the chosen header row index, column names, the group tree, the
-  entity->Split assignment map, and which entities have ever been seen.
-  Split.fraction is a Decimal (JSON has no Decimal type), so it round-trips
-  as a string and gets parsed back through Decimal(str(...)) on load —
-  float never touches money anywhere in this path.
+  yet, the chosen header row index, categorized/metric/dimension column
+  names, one group tree PER categorized column (keyed by column name), and
+  which entities have ever been seen, also PER categorized column (a value
+  being known in one tree says nothing about another tree — see
+  core/session.py's own docstring). Split.fraction is a Decimal (JSON has
+  no Decimal type), so it round-trips as a string and gets parsed back
+  through Decimal(str(...)) on load — float never touches money anywhere
+  in this path.
 
 Sessions are anonymous and ephemeral by design (no auth in this phase —
 see project brief): every save refreshes a TTL, so an abandoned upload
@@ -88,14 +92,22 @@ def save_session(
     meta = {
         "finalized": finalized,
         "header_row_index": header_row_index,
-        "entity_column": session.entity_column,
+        "categorized_columns": session.categorized_columns,
         "metric_column": session.metric_column,
-        "groups": [_group_to_dict(g) for g in session.tree.groups.values()],
-        "assignment": {
-            entity: [_split_to_dict(s) for s in splits]
-            for entity, splits in session.tree.assignment.items()
+        "dimension_columns": session.dimension_columns,
+        "trees": {
+            column: {
+                "groups": [_group_to_dict(g) for g in tree.groups.values()],
+                "assignment": {
+                    entity: [_split_to_dict(s) for s in splits]
+                    for entity, splits in tree.assignment.items()
+                },
+            }
+            for column, tree in session.trees.items()
         },
-        "previously_known_entities": sorted(session._previously_known_entities),
+        "previously_known_entities": {
+            column: sorted(values) for column, values in session._previously_known_entities.items()
+        },
     }
 
     key = _redis_key(session_id)
@@ -116,19 +128,26 @@ def load_session(redis_conn: Redis, session_id: str) -> SessionEnvelope:
 
     df = pl.read_ipc(BytesIO(df_bytes))
 
-    tree = TreeStore()
-    tree.groups = {g["id"]: _group_from_dict(g) for g in meta["groups"]}
-    tree.assignment = {
-        entity: [_split_from_dict(s) for s in splits] for entity, splits in meta["assignment"].items()
-    }
+    trees: dict[str, TreeStore] = {}
+    for column, tree_dict in meta["trees"].items():
+        tree = TreeStore()
+        tree.groups = {g["id"]: _group_from_dict(g) for g in tree_dict["groups"]}
+        tree.assignment = {
+            entity: [_split_from_dict(s) for s in splits]
+            for entity, splits in tree_dict["assignment"].items()
+        }
+        trees[column] = tree
 
     session = Session(
         df=df,
-        entity_column=meta["entity_column"],
+        categorized_columns=meta["categorized_columns"],
         metric_column=meta["metric_column"],
-        tree=tree,
+        dimension_columns=meta.get("dimension_columns", []),
+        trees=trees,
     )
-    session._previously_known_entities = set(meta["previously_known_entities"])
+    session._previously_known_entities = {
+        column: set(values) for column, values in meta["previously_known_entities"].items()
+    }
 
     return SessionEnvelope(
         session=session,

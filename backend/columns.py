@@ -84,6 +84,63 @@ def resolve_unpivot_columns(
     return id_names, value_names
 
 
+def finalize_pipeline_columns(
+    raw_df: pl.DataFrame,
+    header_row_index: int,
+    categorized_col_idx: list[int],
+    metric_col_idx: int,
+    dimension_col_idx: list[int] | None = None,
+) -> tuple[pl.DataFrame, list[str], str, list[str]]:
+    """The main pipeline's column-mapping step: promotes the header row,
+    resolves an arbitrary number of "categorize this" columns (each gets
+    its own independent core.tree.TreeStore — see core/session.py), one
+    metric column, and an arbitrary number of "разбивка" (raw context, no
+    tree) columns, then normalizes the money column exactly like
+    finalize_columns() does.
+
+    Kept SEPARATE from finalize_columns() (below), which stays exactly as
+    it was: the Compare Инструмент (core/compare.py via
+    backend/main.py::_run_compare) only ever needs ONE entity + ONE metric
+    column per file and has nothing to do with category trees — reusing
+    (or worse, mutating) finalize_columns()'s single-entity contract for
+    this multi-column case would either break Compare or force an
+    unnatural 3-role encoding onto a function that was never about that.
+
+    Rows are dropped when the METRIC value is null after normalization
+    (typically a blank trailing row after the real data) — this is
+    column-agnostic to however many categorized columns exist, unlike the
+    single-entity-column null-check finalize_columns() uses, which doesn't
+    generalize once there can be more than one categorized column.
+    """
+    data_df, new_columns = promote_header_row(raw_df, header_row_index)
+    ncols = len(new_columns)
+
+    if not categorized_col_idx:
+        raise ColumnMappingError("At least one column must be chosen to categorize")
+
+    dims = dimension_col_idx or []
+    all_idx = [*categorized_col_idx, metric_col_idx, *dims]
+    for idx in all_idx:
+        if not (0 <= idx < ncols):
+            raise ColumnMappingError(f"column index {idx} is out of range (0..{ncols - 1})")
+    if len(set(all_idx)) != len(all_idx):
+        raise ColumnMappingError(
+            "A column index can't be used for more than one role (categorize / sum / разбивка) at once"
+        )
+
+    categorized_names = [new_columns[i] for i in categorized_col_idx]
+    metric_name = new_columns[metric_col_idx]
+    dimension_names = [new_columns[i] for i in dims]
+
+    if data_df[metric_name].dtype == pl.Utf8:
+        normalized = normalize_decimal_comma(data_df, metric_name)
+        data_df = data_df.with_columns(normalized.alias(metric_name))
+
+    data_df = data_df.filter(pl.col(metric_name).is_not_null())
+
+    return data_df, categorized_names, metric_name, dimension_names
+
+
 def finalize_columns(
     raw_df: pl.DataFrame,
     header_row_index: int,

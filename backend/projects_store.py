@@ -57,9 +57,9 @@ def create_project(
     engine: sa.engine.Engine,
     user_id: str,
     name: str,
-    entity_column: str,
+    categorized_columns: list[str],
     metric_column: str,
-    tree: TreeStore,
+    trees: dict[str, TreeStore],
 ) -> dict:
     if count_projects(engine, user_id) >= FREE_TIER_PROJECT_LIMIT:
         raise ProjectLimitError(
@@ -68,15 +68,17 @@ def create_project(
         )
     project_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
+    tree_json = {column: tree_to_dict(trees[column]) for column in categorized_columns}
     with engine.begin() as conn:
         conn.execute(
             projects.insert().values(
                 id=project_id,
                 user_id=user_id,
                 name=name,
-                entity_column=entity_column,
+                entity_column=categorized_columns[0],
                 metric_column=metric_column,
-                tree_json=tree_to_dict(tree),
+                categorized_columns=categorized_columns,
+                tree_json=tree_json,
                 created_at=now,
                 updated_at=now,
             )
@@ -107,11 +109,16 @@ def get_project(engine: sa.engine.Engine, user_id: str, project_id: str) -> dict
     return summary
 
 
-def get_project_tree(engine: sa.engine.Engine, user_id: str, project_id: str) -> TreeStore:
+def get_project_trees(engine: sa.engine.Engine, user_id: str, project_id: str) -> dict[str, TreeStore]:
+    """One TreeStore per categorized column this Project holds (see
+    create_project) — a Project can carry more than one independent tree,
+    same as a Session (core/session.py)."""
     row = _fetch_row(engine, project_id)
     if row is None or row["user_id"] != user_id:
         raise ProjectNotFoundError(f"Project {project_id!r} not found")
-    return tree_from_dict(row["tree_json"])
+    return {
+        column: tree_from_dict(row["tree_json"][column]) for column in row["categorized_columns"]
+    }
 
 
 def _fetch_row(engine: sa.engine.Engine, project_id: str):
@@ -120,12 +127,18 @@ def _fetch_row(engine: sa.engine.Engine, project_id: str):
 
 
 def _row_to_summary(row) -> dict:
-    groups_count = len(row["tree_json"].get("groups", []))
+    # groups_count sums across every tree this project holds — a single
+    # back-compat-friendly number for the project-picker card (see
+    # design-prototype/upload.html's maybeShowProjectPicker()), which
+    # doesn't need a per-column breakdown to decide whether a project
+    # "has a dictionary worth reusing".
+    groups_count = sum(len(tree.get("groups", [])) for tree in row["tree_json"].values())
     return {
         "id": row["id"],
         "name": row["name"],
         "entity_column": row["entity_column"],
         "metric_column": row["metric_column"],
+        "categorized_columns": row["categorized_columns"],
         "groups_count": groups_count,
         "created_at": row["created_at"].isoformat(),
         "updated_at": row["updated_at"].isoformat(),
