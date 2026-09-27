@@ -236,21 +236,31 @@
 
   function headerCells() { return rawRows[headerRowIndex] || []; }
 
-  // Real files most often have a clean header in row 0 — the "decorative
-  // title row before the real header" (1C/WB report titles) is common
-  // enough to design the picker around, but it's not the default case, so
-  // guessing "always row 1" was wrong more often than not. The one cheap,
-  // measurable signal available from a raw preview (no merged-cell info)
-  // is cell density: a decorative title row fills far fewer cells than an
-  // real header row does, because it's one long string spanning the row
-  // rather than N separate short labels.
+  // Real 1C exports can carry MANY decorative rows before the real header
+  // (report title, "Параметры:", filter description, blank spacer rows) —
+  // verified live against a real "Продажи" 1C report with 7 such rows
+  // before the actual header at index 7. A 2-row-only check (comparing
+  // just row 0 vs row 1) can't see past that. The signal that generalizes:
+  // a real header row names N separate short columns, so it has more
+  // non-empty cells than either the decorative rows above it (usually 0-2
+  // filled — one long title string, or a short label) or the data rows
+  // below it (merged-cell columns in the source often make data rows have
+  // FEWER filled cells than the header that names them, confirmed on the
+  // real file: header 10/14 filled, every data row 9/14). Picking the
+  // first row that maximizes filled-cell count (min. 2, so a lone title
+  // cell never wins) finds the real header without guessing a fixed depth.
   function guessHeaderRow(rows) {
-    if (rows.length < 2) return 0;
     const filledCount = (row) => row.filter(c => c !== null && c !== undefined && String(c).trim() !== '').length;
-    const row0Filled = filledCount(rows[0]);
-    const row1Filled = filledCount(rows[1]);
-    const looksDecorative = row1Filled >= 2 && row0Filled <= row1Filled / 2;
-    return looksDecorative ? 1 : 0;
+    let bestIdx = 0;
+    let bestScore = -1;
+    for (let i = 0; i < rows.length; i++) {
+      const score = filledCount(rows[i]);
+      if (score >= 2 && score > bestScore) {
+        bestScore = score;
+        bestIdx = i;
+      }
+    }
+    return bestIdx;
   }
 
   // ---------- Upload wiring ----------

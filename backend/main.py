@@ -283,12 +283,15 @@ def delete_group(session_id: str, group_id: str, redis_conn: Redis = Depends(get
     try:
         envelope.session.tree.remove_group(group_id)
     except GroupNotEmptyError as exc:
-        # Mirrors the prototype's alert('В этой категории есть значения —
-        # сначала перенесите их') — a 409, not a bare 500, because this is
-        # an expected, recoverable user action, not a server fault.
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        # A 409, not a bare 500 — expected, recoverable user action, not a
+        # server fault. core.tree's own exception text is English (dev/test
+        # facing); this is the Russian text actually shown to the user.
+        raise HTTPException(
+            status_code=409,
+            detail="Нельзя удалить категорию: в ней ещё есть подкатегории или значения — сначала перенесите их",
+        ) from exc
     except TreeError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        raise HTTPException(status_code=404, detail="Категория не найдена") from exc
 
     save_session(redis_conn, session_id, envelope.session, envelope.finalized, envelope.header_row_index)
 
@@ -301,9 +304,12 @@ def assign_entities(session_id: str, body: AssignRequest, redis_conn: Redis = De
     try:
         envelope.session.assign(body.entity_ids, body.group_id)
     except NotALeafError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=409,
+            detail="Нельзя распределить в эту категорию — в ней есть подкатегории, выберите одну из них",
+        ) from exc
     except TreeError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail="Категория не найдена") from exc
 
     save_session(redis_conn, session_id, envelope.session, envelope.finalized, envelope.header_row_index)
 

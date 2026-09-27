@@ -235,13 +235,23 @@
 
   // Same cheap heuristic as upload.html: a decorative title row fills far
   // fewer cells than a real header row (one long string vs N short labels).
+  // Picks the row with the most non-empty cells (min. 2) — real 1C
+  // exports can have many decorative rows before the header (verified
+  // live against a real report: 7 decorative rows, header at index 7 with
+  // 10/14 filled vs 9/14 for every data row below it). A fixed "row 0 or
+  // row 1" check can't see past a preamble that deep.
   function guessHeaderRow(rows) {
-    if (rows.length < 2) return 0;
     const filledCount = (row) => row.filter(c => c !== null && c !== undefined && String(c).trim() !== '').length;
-    const row0Filled = filledCount(rows[0]);
-    const row1Filled = filledCount(rows[1]);
-    const looksDecorative = row1Filled >= 2 && row0Filled <= row1Filled / 2;
-    return looksDecorative ? 1 : 0;
+    let bestIdx = 0;
+    let bestScore = -1;
+    for (let i = 0; i < rows.length; i++) {
+      const score = filledCount(rows[i]);
+      if (score >= 2 && score > bestScore) {
+        bestScore = score;
+        bestIdx = i;
+      }
+    }
+    return bestIdx;
   }
 
   // ---------- Upload wiring ----------
