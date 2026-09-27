@@ -53,12 +53,26 @@ real thing that happens with real Russian marketplace/1C exports:
   core.parsing._glue_pdf_page_grids()'s "confirmed repeating header"
   branch: page 1 kept whole, the duplicate header dropped from pages 2-3.
 
+- mailmerge_recipients.xlsx: a Mail Merge (Фаза 4) source file — one row
+  per recipient (ФИО/Сумма/Дата), the exact shape core/mailmerge.py's
+  {{Поле}} template substitution targets. Used for both backend HTTP tests
+  and the live Playwright run against the deployed server.
+
+- pdf_marker_invoices.pdf: three накладные concatenated into one PDF, each
+  starting with a repeated "Накладная № NNNN" marker on its first page —
+  the realistic input for core/pdf_split.py's "Разбивка по маркеру" (Фаза
+  4): a batch export that needs to come back apart into individual files.
+
 Both PDF fixtures use real Cyrillic text and reuse the same realistic
 product names as the Excel/CSV fixtures above. Generating them required
 explicitly registering a Cyrillic-capable TTF font first — reportlab's
 default Helvetica has NO Cyrillic glyphs and silently turns Russian text
 into garbage ("nnnnnnn") instead of raising, a real trap already hit once
-in this project.
+in this project. Note: as of Фаза 4, reportlab is no longer just a
+fixture-authoring tool — core/mailmerge.py and core/watermark.py both
+import it at runtime to actually render output, so it's now a normal
+requirements.txt entry, present in every environment (including the
+production server) that runs this project at all.
 
 Run directly to (re)generate the files:
     python backend/tests/fixtures/generate_fixtures.py
@@ -281,6 +295,44 @@ def make_pdf_multipage_table() -> None:
     print(f"  expected total (Decimal-summed): {total}")
 
 
+def make_mailmerge_recipients() -> None:
+    """One row per recipient — ФИО/Сумма/Дата — the shape Mail Merge's
+    {{Поле}} template targets. Values chosen so each recipient is
+    unambiguously distinguishable in a rendered PDF (different name,
+    different amount), so a Playwright run can confirm placeholders were
+    substituted per-row and not mixed up between documents."""
+    rows = [
+        ["ФИО", "Сумма", "Дата"],
+        ["Иванов Иван Иванович", "15000", "01.09.2026"],
+        ["Петрова Мария Сергеевна", "8250", "02.09.2026"],
+        ["Сидоров Пётр Ильич", "12000", "03.09.2026"],
+    ]
+    _write_xlsx("mailmerge_recipients.xlsx", rows)
+
+
+def make_pdf_marker_invoices() -> None:
+    """Three накладные in one PDF, each starting with a repeated
+    "Накладная № NNNN" marker on its own first page — the realistic
+    "batch export, split back into files" input for Разбивка по маркеру."""
+    font = _register_cyrillic_font()
+    path = FIXTURES_DIR / "pdf_marker_invoices.pdf"
+    c = canvas.Canvas(str(path), pagesize=A4)
+    invoices = [
+        ("0001", "ООО Ромашка", "10 900"),
+        ("0002", "ИП Иванов", "5 000"),
+        ("0003", "ЗАО Вектор", "32 000"),
+    ]
+    for number, contragent, amount in invoices:
+        c.setFont(font, 13)
+        c.drawString(70, 780, f"Накладная № {number}")
+        c.setFont(font, 11)
+        c.drawString(70, 750, f"Контрагент: {contragent}")
+        c.drawString(70, 725, f"Сумма: {amount} руб.")
+        c.showPage()
+    c.save()
+    print(f"wrote pdf_marker_invoices.pdf ({len(invoices)} invoices, 1 page each)")
+
+
 if __name__ == "__main__":
     FIXTURES_DIR.mkdir(parents=True, exist_ok=True)
     make_decorative_header_1c()
@@ -290,3 +342,5 @@ if __name__ == "__main__":
     make_pdf_invoice_no_borders()
     make_pdf_blank_page()
     make_pdf_multipage_table()
+    make_mailmerge_recipients()
+    make_pdf_marker_invoices()

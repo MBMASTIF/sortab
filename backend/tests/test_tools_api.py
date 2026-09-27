@@ -243,3 +243,250 @@ def test_compare_unknown_token_is_404(client):
         },
     )
     assert resp.status_code == 404
+
+
+# ---------------------------- Mail Merge ----------------------------
+
+
+def _mailmerge_source_bytes() -> bytes:
+    return _xlsx_bytes(
+        [
+            ["ФИО", "Сумма", "Дата"],
+            ["Иванов Иван Иванович", 15000, "01.09.2026"],
+            ["Петрова Мария Сергеевна", 8250, "02.09.2026"],
+            ["Сидоров Пётр Ильич", 12000, "03.09.2026"],
+        ]
+    )
+
+
+def _upload_for_mailmerge(client, content: bytes, name: str = "recipients.xlsx") -> dict:
+    resp = client.post(
+        "/api/tools/preview",
+        files={"file": (name, content, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def test_mailmerge_produces_one_pdf_per_row(client):
+    import zipfile
+    from io import BytesIO
+
+    from pypdf import PdfReader
+
+    preview = _upload_for_mailmerge(client, _mailmerge_source_bytes())
+
+    resp = client.post(
+        "/api/tools/mailmerge",
+        json={
+            "token": preview["token"],
+            "header_row_index": 0,
+            "template": "Уважаемый {{ФИО}},\nК оплате: {{Сумма}} руб. Дата: {{Дата}}.",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("application/zip")
+
+    zf = zipfile.ZipFile(BytesIO(resp.content))
+    names = zf.namelist()
+    assert len(names) == 3  # 3 data rows
+
+    # Every generated PDF must contain ITS OWN recipient's data, not some
+    # other row's — the whole point of Mail Merge.
+    combined_text = ""
+    for name in names:
+        pdf_bytes = zf.read(name)
+        reader = PdfReader(BytesIO(pdf_bytes))
+        combined_text += reader.pages[0].extract_text() or ""
+
+    assert "Иванов Иван Иванович" in combined_text
+    assert "15000" in combined_text
+    assert "Петрова Мария Сергеевна" in combined_text
+    assert "8250" in combined_text
+    assert "Сидоров Пётр Ильич" in combined_text
+    assert "12000" in combined_text
+
+
+def test_mailmerge_rejects_unknown_placeholder(client):
+    preview = _upload_for_mailmerge(client, _mailmerge_source_bytes())
+
+    resp = client.post(
+        "/api/tools/mailmerge",
+        json={
+            "token": preview["token"],
+            "header_row_index": 0,
+            "template": "Уважаемый {{Отчество}}",
+        },
+    )
+    assert resp.status_code == 400
+
+
+def test_mailmerge_unknown_token_is_404(client):
+    resp = client.post(
+        "/api/tools/mailmerge",
+        json={"token": "does-not-exist", "header_row_index": 0, "template": "{{ФИО}}"},
+    )
+    assert resp.status_code == 404
+
+
+# ---------------------------- Split by marker ----------------------------
+
+
+def _make_invoices_pdf_bytes() -> bytes:
+    from io import BytesIO
+    from pathlib import Path
+
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.pdfgen import canvas
+
+    candidates = [
+        Path(r"C:\Windows\Fonts\arial.ttf"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+        Path("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"),
+        Path("/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"),
+    ]
+    font = None
+    for c in candidates:
+        if c.exists():
+            pdfmetrics.registerFont(TTFont("ApiTestCyrillicFont", str(c)))
+            font = "ApiTestCyrillicFont"
+            break
+    assert font is not None, "No Cyrillic TTF font available for this test"
+
+    buffer = BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    for inv_num in range(1, 4):
+        c.setFont(font, 12)
+        c.drawString(70, 780, f"Накладная № {inv_num:04d}")
+        c.drawString(70, 750, f"содержимое накладной {inv_num}")
+        c.showPage()
+    c.save()
+    return buffer.getvalue()
+
+
+def test_split_produces_one_file_per_marker(client):
+    import zipfile
+    from io import BytesIO
+
+    from pypdf import PdfReader
+
+    pdf_bytes = _make_invoices_pdf_bytes()
+    resp = client.post(
+        "/api/tools/split",
+        files={"file": ("накладные.pdf", pdf_bytes, "application/pdf")},
+        data={"marker": "Накладная №"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("application/zip")
+
+    zf = zipfile.ZipFile(BytesIO(resp.content))
+    names = zf.namelist()
+    assert len(names) == 3
+
+    found_numbers = set()
+    for name in names:
+        reader = PdfReader(BytesIO(zf.read(name)))
+        assert len(reader.pages) == 1
+        text = reader.pages[0].extract_text() or ""
+        for n in ("0001", "0002", "0003"):
+            if n in text:
+                found_numbers.add(n)
+    assert found_numbers == {"0001", "0002", "0003"}
+
+
+def test_split_marker_not_found_is_400_not_empty_zip(client):
+    pdf_bytes = _make_invoices_pdf_bytes()
+    resp = client.post(
+        "/api/tools/split",
+        files={"file": ("накладные.pdf", pdf_bytes, "application/pdf")},
+        data={"marker": "Такого текста тут точно нет"},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"]
+
+
+def test_split_rejects_garbage_file(client):
+    resp = client.post(
+        "/api/tools/split",
+        files={"file": ("not-a-pdf.pdf", b"garbage bytes, not a pdf", "application/pdf")},
+        data={"marker": "Накладная"},
+    )
+    assert resp.status_code == 400
+
+
+# ---------------------------- Watermark ----------------------------
+
+
+def _make_simple_pdf_bytes(n_pages: int = 2) -> bytes:
+    from io import BytesIO
+    from pathlib import Path
+
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.pdfgen import canvas
+
+    candidates = [
+        Path(r"C:\Windows\Fonts\arial.ttf"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+        Path("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"),
+        Path("/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"),
+    ]
+    font = None
+    for c in candidates:
+        if c.exists():
+            pdfmetrics.registerFont(TTFont("ApiTestCyrillicFont2", str(c)))
+            font = "ApiTestCyrillicFont2"
+            break
+    assert font is not None, "No Cyrillic TTF font available for this test"
+
+    buffer = BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    for i in range(n_pages):
+        c.setFont(font, 12)
+        c.drawString(70, 780, f"Прайс-лист, страница {i + 1}")
+        c.showPage()
+    c.save()
+    return buffer.getvalue()
+
+
+def test_watermark_appears_on_every_page(client):
+    from io import BytesIO
+
+    from pypdf import PdfReader
+
+    pdf_bytes = _make_simple_pdf_bytes(3)
+    resp = client.post(
+        "/api/tools/watermark",
+        files={"file": ("прайс.pdf", pdf_bytes, "application/pdf")},
+        data={"text": "sotrudnik@example.com"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("application/pdf")
+
+    reader = PdfReader(BytesIO(resp.content))
+    assert len(reader.pages) == 3
+    for page in reader.pages:
+        text = page.extract_text() or ""
+        assert "sotrudnik@example.com" in text
+
+
+def test_watermark_rejects_empty_text(client):
+    pdf_bytes = _make_simple_pdf_bytes(1)
+    resp = client.post(
+        "/api/tools/watermark",
+        files={"file": ("прайс.pdf", pdf_bytes, "application/pdf")},
+        data={"text": "   "},
+    )
+    assert resp.status_code == 400
+
+
+def test_watermark_rejects_garbage_file(client):
+    resp = client.post(
+        "/api/tools/watermark",
+        files={"file": ("not-a-pdf.pdf", b"garbage bytes, not a pdf", "application/pdf")},
+        data={"text": "ЧЕРНОВИК"},
+    )
+    assert resp.status_code == 400

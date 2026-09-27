@@ -4,6 +4,8 @@ rapidfuzz>=3.14
 charset-normalizer>=3.4
 pdfplumber>=0.11
 camelot-py[base]>=2.0
+pypdf>=6.0  # page-level PDF ops (Split by marker, Watermark) — see core/watermark.py's benchmark-based choice over pikepdf
+reportlab>=4.0  # renders Mail Merge PDFs and watermark overlays — promoted from a test-fixture-only dep to a runtime one this phase
 fastapi
 python-multipart  # required by FastAPI/Starlette to parse multipart file uploads (POST /api/upload)
 uvicorn  # ASGI server to actually run the FastAPI app outside of tests

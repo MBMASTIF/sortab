@@ -13,13 +13,15 @@ need an account, only *saving* a Project will, and that's a later phase.
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 import uuid
+import zipfile
 from decimal import Decimal
 from pathlib import Path
 
 import polars as pl
-from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from redis import Redis
@@ -54,10 +56,13 @@ from backend.session_store import (
 from backend.tools_store import ToolFileStore, ToolTokenNotFoundError
 from core.compare import compare_entities
 from core.export import build_detail_sheet, build_summary_sheet, export_single_sheet, export_workbook
+from core.mailmerge import MailMergeError, build_row_dicts, render_pdf as render_mailmerge_pdf, render_text, validate_template
 from core.parsing import UnsupportedFileError, parse_file_raw
+from core.pdf_split import SplitError, split_by_marker
 from core.session import Session, SessionError
 from core.tree import GroupNotEmptyError, NotALeafError, TreeError
 from core.unpivot import UnpivotError, unpivot_table
+from core.watermark import WatermarkError, add_watermark
 
 app = FastAPI(title="gruper API")
 
@@ -144,6 +149,12 @@ class CompareRequest(BaseModel):
     header_row_index_b: int
     entity_column_b: int
     metric_column_b: int
+
+
+class MailMergeRequest(BaseModel):
+    token: str
+    header_row_index: int
+    template: str
 
 
 def _decimal_str(value: Decimal) -> str:
@@ -629,5 +640,127 @@ def tools_compare_export(body: CompareRequest, store: ToolFileStore = Depends(ge
         tmp.name,
         filename="gruper_compare.xlsx",
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        background=BackgroundTask(os.unlink, tmp.name),
+    )
+
+
+# ---------------------------------------------------------------------
+# Инструменты (Mail Merge, Split by marker, Watermark) — Фаза 4. Same
+# "Инструменты" contract as Unpivot/Compare above: no auth, nothing
+# persisted, anonymous. Mail Merge reuses the existing
+# preview(token)->commit flow (it needs a header-row-pick step, same as
+# Unpivot/Compare, since placeholders are matched against real column
+# names). Split and Watermark do NOT need that intermediate step — there's
+# no column/row picking screen for either, just one file + one text field
+# — so they're single-request endpoints (multipart upload straight to the
+# result) rather than routed through ToolFileStore. That also sidesteps
+# the whole "does this token survive across the 2 uvicorn workers" concern
+# tools_store.py's docstring describes: with no state held between
+# requests, there's nothing that CAN go to the wrong worker.
+# ---------------------------------------------------------------------
+
+_UNSAFE_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|\r\n\t]')
+
+
+def _safe_filename(raw: str, fallback: str) -> str:
+    cleaned = _UNSAFE_FILENAME_CHARS.sub("", raw).strip()
+    cleaned = cleaned[:80]
+    return cleaned or fallback
+
+
+@app.post("/api/tools/mailmerge")
+def tools_mailmerge(body: MailMergeRequest, store: ToolFileStore = Depends(get_tools_store)):
+    """Excel (one row per recipient) + a {{Поле}} text template -> a .zip
+    of N personalized PDFs, one per row. See core/mailmerge.py for the
+    substitution/rendering logic; this endpoint is only the same thin
+    HTTP wrapping every other route in this file already does."""
+    raw_df = _load_tool_df(store, body.token)
+
+    try:
+        data_df, column_names = promote_header_row(raw_df, body.header_row_index)
+    except ColumnMappingError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
+        validate_template(body.template, column_names)
+    except MailMergeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if data_df.height == 0:
+        raise HTTPException(status_code=400, detail="В файле нет строк с данными после выбранной строки заголовка")
+
+    rows = [list(r) for r in data_df.rows()]
+    row_dicts = build_row_dicts(column_names, rows)
+    first_column = column_names[0]
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
+    tmp.close()
+    used_names: dict[str, int] = {}
+    with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_DEFLATED) as zf:
+        for i, row in enumerate(row_dicts, start=1):
+            text = render_text(body.template, row)
+            pdf_bytes = render_mailmerge_pdf(text)
+
+            base_name = _safe_filename(row.get(first_column, ""), f"документ_{i}")
+            name = base_name
+            if name in used_names:
+                used_names[name] += 1
+                name = f"{name} ({used_names[name]})"
+            else:
+                used_names[name] = 0
+            zf.writestr(f"{name}.pdf", pdf_bytes)
+
+    return FileResponse(
+        tmp.name,
+        filename="gruper_mailmerge.zip",
+        media_type="application/zip",
+        background=BackgroundTask(os.unlink, tmp.name),
+    )
+
+
+@app.post("/api/tools/split")
+async def tools_split(file: UploadFile = File(...), marker: str = Form(...)):
+    """One PDF + one text marker -> a .zip of the PDF split into parts at
+    every page the marker appears on. See core/pdf_split.py."""
+    contents = await file.read()
+
+    try:
+        parts = split_by_marker(contents, marker)
+    except SplitError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
+    tmp.close()
+    with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_DEFLATED) as zf:
+        for part in parts:
+            zf.writestr(f"{part.name}.pdf", part.pdf_bytes)
+
+    return FileResponse(
+        tmp.name,
+        filename="gruper_split.zip",
+        media_type="application/zip",
+        background=BackgroundTask(os.unlink, tmp.name),
+    )
+
+
+@app.post("/api/tools/watermark")
+async def tools_watermark(file: UploadFile = File(...), text: str = Form(...)):
+    """One PDF + watermark text -> the same PDF back with the text stamped
+    diagonally on every page. See core/watermark.py."""
+    contents = await file.read()
+
+    try:
+        result_bytes = add_watermark(contents, text)
+    except WatermarkError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+    tmp.write(result_bytes)
+    tmp.close()
+
+    return FileResponse(
+        tmp.name,
+        filename="gruper_watermark.pdf",
+        media_type="application/pdf",
         background=BackgroundTask(os.unlink, tmp.name),
     )
