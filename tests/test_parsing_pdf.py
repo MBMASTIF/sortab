@@ -71,18 +71,68 @@ def test_pdf_unsupported_when_no_table_found():
         parse_file_raw(FIXTURES_DIR / "pdf_blank_page.pdf")
 
 
-def test_pdf_malformed_bytes_raise_unsupported_not_a_raw_pdf_exception(tmp_path):
+@pytest.mark.parametrize(
+    "label,content",
+    [
+        # Most malformed content -> playa.exceptions.PDFException.
+        ("syntax_error", b"%PDF-1.4 not really a valid pdf body"),
+        ("truncated_after_header", b"%PDF-1.4\n%%EOF"),
+        ("no_root_object", b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\n"),
+        ("binary_garbage", b"\x00\x01\x02\x03\x04garbage binary"),
+        ("not_a_pdf_at_all", b"not a pdf at all, random garbage bytes 12345"),
+        # This specific shape escapes as a bare StopIteration from
+        # playa's trailer reader (document.py's `next(...)` has no
+        # except of its own) instead of a PDFException subclass —
+        # verified live against the deployed server: an earlier version
+        # of _read_pdf_raw() only caught PDFException, so this exact
+        # byte string produced an unhandled 500 ("RuntimeError: coroutine
+        # raised StopIteration", from PEP 479's handling of a
+        # StopIteration that crosses an `async def` boundary).
+        ("stop_iteration_leak", b"%PDF-1.4 not a real pdf\n"),
+    ],
+)
+def test_pdf_malformed_bytes_raise_unsupported_not_a_raw_pdf_exception(tmp_path, label, content):
     """A file with a .pdf extension whose content isn't actually a valid
     PDF (corrupt upload, wrong file renamed, etc.) must raise the same
-    UnsupportedFileError every other bad input raises — not leak camelot's
-    internal playa.exceptions.PDFSyntaxError up through the API as an
-    unhandled 500. Verified live: this exact byte string raises
-    PDFSyntaxError ("Trailer is not a dict") from playa/pdfminer."""
-    path = tmp_path / "corrupt.pdf"
-    path.write_bytes(b"%PDF-1.4 not really a valid pdf body")
+    UnsupportedFileError every other bad input raises — never leak one of
+    camelot/playa's internal, undocumented exception types up through the
+    API as an unhandled 500. Each variant here is a real byte string that
+    was empirically found (not assumed) to trigger a DIFFERENT underlying
+    exception type deep inside camelot's PDF backend."""
+    path = tmp_path / f"corrupt_{label}.pdf"
+    path.write_bytes(content)
 
     with pytest.raises(UnsupportedFileError):
         parse_file_raw(path)
+
+
+def test_pdf_empty_file_raises_unsupported_not_a_bare_valueerror(tmp_path):
+    """A genuinely empty .pdf (0 bytes) hits Python's own mmap module
+    before playa even starts parsing — mmap.mmap() on an empty file
+    raises a bare ValueError("cannot mmap an empty file"), a third
+    distinct exception shape (see the parametrized test above for the
+    other two) that must still come back as UnsupportedFileError."""
+    path = tmp_path / "empty.pdf"
+    path.write_bytes(b"")
+
+    with pytest.raises(UnsupportedFileError):
+        parse_file_raw(path)
+
+
+def test_pdf_malformed_upload_does_not_leak_an_open_file_handle(tmp_path):
+    """Regression guard for the Windows PermissionError bug this module's
+    exception handling exists to avoid: after parse_file_raw() raises
+    UnsupportedFileError for a corrupt PDF, the caller must be able to
+    delete the file immediately (mirrors backend/main.py's /api/upload,
+    which writes the upload to a temp file and os.unlink()s it in a
+    `finally` block right after calling parse_file_raw())."""
+    path = tmp_path / "corrupt.pdf"
+    path.write_bytes(b"%PDF-1.4 not a real pdf\n")  # the StopIteration-leak shape
+
+    with pytest.raises(UnsupportedFileError):
+        parse_file_raw(path)
+
+    path.unlink()  # must not raise PermissionError
 
 
 # --- _glue_pdf_page_grids() unit tests: exercise the decision logic

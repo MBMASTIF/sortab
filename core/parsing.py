@@ -168,19 +168,33 @@ def _read_pdf_raw(path: Path) -> pl.DataFrame:
 
     try:
         tables = camelot.read_pdf(str(path), flavor="stream", pages="all")
-    except PDFException as exc:
-        # camelot's backend (playa) raises its own exception hierarchy for
-        # a file that claims to be a PDF but isn't one it can actually
-        # read (bad syntax, encrypted, unsupported font table, ...).
-        # Verified live with a deliberately corrupt file — without this,
-        # a bad upload became an unhandled 500 instead of the same clean
-        # "can't use this file" 400 every other unsupported input gets.
+    except (PDFException, StopIteration, ValueError) as exc:
+        # camelot's backend (playa) does NOT raise one clean, documented
+        # exception type for "this isn't a readable PDF" — verified live
+        # by throwing a battery of malformed .pdf-extension inputs at it,
+        # not assumed from the docs:
+        #   - most malformed content -> playa.exceptions.PDFException
+        #     (its own hierarchy: syntax, encryption, font errors, ...)
+        #   - some truncated/malformed content -> a bare StopIteration
+        #     escapes from playa's trailer reader (document.py's
+        #     `next(...)` has no except of its own) — caught HERE, in a
+        #     plain sync frame, deliberately, so it never gets anywhere
+        #     near an `async def` boundary: PEP 479 turns an escaping
+        #     StopIteration into "RuntimeError: coroutine raised
+        #     StopIteration" once it crosses one, which is exactly what
+        #     an earlier version of this function let happen (confirmed
+        #     against the live server's error log: an unhandled 500).
+        #   - a genuinely empty file -> ValueError("cannot mmap an empty
+        #     file") straight out of the stdlib mmap module, before playa
+        #     even starts parsing.
+        # All three mean the same thing to our caller: this .pdf can't be
+        # read, treat it like any other unsupported input, not a crash.
         #
         # exc.__traceback__ is cleared, and chaining suppressed (`from
-        # None`), before re-raising: playa mmaps the source file, and a
-        # PDFSyntaxError's traceback keeps the frame that mmap'd it alive
-        # (an in-flight exception's traceback is a live reference, not
-        # GC-collectible garbage — gc.collect() alone can't free it).
+        # None`), before re-raising: playa mmaps the source file, and the
+        # caught exception's traceback keeps the frame that mmap'd it
+        # alive (an in-flight exception's traceback is a live reference,
+        # not GC-collectible garbage — gc.collect() alone can't free it).
         # Verified live on Windows: without clearing the traceback here,
         # the caller's own `finally: os.unlink(tmp_path)` (see
         # backend/main.py's /api/upload) fails with PermissionError
