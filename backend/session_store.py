@@ -26,13 +26,17 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
-from decimal import Decimal
 from io import BytesIO
 
 import polars as pl
 from redis import Redis
 
-from core.reconcile import Group, Split
+from backend.tree_serialization import (
+    group_from_dict as _group_from_dict,
+    group_to_dict as _group_to_dict,
+    split_from_dict as _split_from_dict,
+    split_to_dict as _split_to_dict,
+)
 from core.session import Session
 from core.tree import TreeStore
 
@@ -69,22 +73,6 @@ def get_redis_client() -> Redis:
     no live Redis server."""
     url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
     return Redis.from_url(url)
-
-
-def _group_to_dict(g: Group) -> dict:
-    return {"id": g.id, "parent_id": g.parent_id, "name": g.name}
-
-
-def _group_from_dict(d: dict) -> Group:
-    return Group(id=d["id"], parent_id=d["parent_id"], name=d["name"])
-
-
-def _split_to_dict(s: Split) -> dict:
-    return {"group_id": s.group_id, "fraction": str(s.fraction)}
-
-
-def _split_from_dict(d: dict) -> Split:
-    return Split(group_id=d["group_id"], fraction=Decimal(d["fraction"]))
 
 
 def save_session(

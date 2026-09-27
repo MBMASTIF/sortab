@@ -9,6 +9,8 @@ python-multipart  # required by FastAPI/Starlette to parse multipart file upload
 uvicorn  # ASGI server to actually run the FastAPI app outside of tests
 redis
 rq
+sqlalchemy>=2.0  # Проекты (Postgres) — see backend/db.py
+psycopg2-binary  # Postgres driver for sqlalchemy in production (tests use in-memory SQLite)
 openpyxl
 xlsxwriter
 pytest>=9.1

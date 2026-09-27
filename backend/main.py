@@ -18,13 +18,31 @@ import uuid
 from decimal import Decimal
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from redis import Redis
+from sqlalchemy.engine import Engine
 from starlette.background import BackgroundTask
 
+from backend.auth import (
+    AUTH_COOKIE_NAME,
+    AUTH_TOKEN_TTL_SECONDS,
+    COOKIE_SECURE,
+    create_auth_token,
+    resolve_user_id,
+)
 from backend.columns import ColumnMappingError, finalize_columns
+from backend.db import get_engine
+from backend.projects_store import (
+    ProjectLimitError,
+    ProjectNotFoundError,
+    create_project,
+    get_or_create_user,
+    get_project,
+    get_project_tree,
+    list_projects,
+)
 from backend.session_store import (
     SessionEnvelope,
     SessionNotFoundError,
@@ -48,6 +66,27 @@ def get_redis() -> Redis:
     return get_redis_client()
 
 
+def get_db() -> Engine:
+    """FastAPI dependency. Overridden in tests (dependency_overrides) with
+    an in-memory SQLite engine, mirroring get_redis() above."""
+    return get_engine()
+
+
+def require_user(request: Request, redis_conn: Redis = Depends(get_redis)) -> str:
+    """Dependency for every /api/projects* endpoint: resolves the
+    httpOnly cookie set by POST /api/auth/identify into a user_id, or
+    raises a 401 with a message the frontend uses to trigger the "enter
+    your email" prompt (see design-prototype/app.html)."""
+    token = request.cookies.get(AUTH_COOKIE_NAME)
+    user_id = resolve_user_id(redis_conn, token)
+    if user_id is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Нужно представиться по email, чтобы сохранять проекты — POST /api/auth/identify",
+        )
+    return user_id
+
+
 class ColumnsRequest(BaseModel):
     header_row_index: int
     entity_column: int
@@ -63,6 +102,15 @@ class CreateGroupRequest(BaseModel):
 class AssignRequest(BaseModel):
     entity_ids: list[str]
     group_id: str
+
+
+class IdentifyRequest(BaseModel):
+    email: str
+
+
+class CreateProjectRequest(BaseModel):
+    session_id: str
+    name: str
 
 
 def _decimal_str(value: Decimal) -> str:
@@ -171,6 +219,19 @@ def create_group(session_id: str, body: CreateGroupRequest, redis_conn: Redis = 
     return {"id": group.id, "name": group.name, "parent_id": group.parent_id}
 
 
+@app.get("/api/session/{session_id}/groups")
+def get_groups(session_id: str, redis_conn: Redis = Depends(get_redis)):
+    """Lets a client re-derive the group tree after a hard page reload —
+    the tree lives in Redis via session.tree, it was just never exposed
+    over HTTP before. See design-prototype/app.html's init(), which used
+    to rebuild the tree from nothing but its own in-memory JS state and
+    lost it on refresh."""
+    envelope = _load_or_404(redis_conn, session_id)
+    return [
+        {"id": g.id, "parent_id": g.parent_id, "name": g.name} for g in envelope.session.tree.as_group_list()
+    ]
+
+
 @app.delete("/api/session/{session_id}/groups/{group_id}", status_code=204)
 def delete_group(session_id: str, group_id: str, redis_conn: Redis = Depends(get_redis)):
     envelope = _load_or_404(redis_conn, session_id)
@@ -246,3 +307,131 @@ def export_session(session_id: str, redis_conn: Redis = Depends(get_redis)):
         # client — deleting it inline would race the response.
         background=BackgroundTask(os.unlink, tmp.name),
     )
+
+
+# ---------------------------------------------------------------------
+# "Мягкий email" identification + Проекты (Postgres). See backend/auth.py
+# and backend/projects_store.py for the actual logic — this section is
+# just the same thin HTTP wrapping the rest of this file already does.
+# ---------------------------------------------------------------------
+
+
+@app.post("/api/auth/identify")
+def identify(
+    body: IdentifyRequest,
+    response: Response,
+    redis_conn: Redis = Depends(get_redis),
+    engine: Engine = Depends(get_db),
+):
+    email = body.email.strip().lower()
+    # Deliberately loose validation — this is a low-friction lead-capture
+    # step, not account creation with a confirmation email (see README).
+    # Just enough to reject obvious junk.
+    if "@" not in email or len(email) < 3:
+        raise HTTPException(status_code=400, detail="Некорректный email")
+
+    user_id = get_or_create_user(engine, email)
+    token = create_auth_token(redis_conn, user_id)
+    response.set_cookie(
+        key=AUTH_COOKIE_NAME,
+        value=token,
+        httponly=True,
+        max_age=AUTH_TOKEN_TTL_SECONDS,
+        samesite="lax",
+        secure=COOKIE_SECURE,
+        path="/",
+    )
+    return {"email": email}
+
+
+@app.post("/api/projects", status_code=201)
+def save_project(
+    body: CreateProjectRequest,
+    user_id: str = Depends(require_user),
+    redis_conn: Redis = Depends(get_redis),
+    engine: Engine = Depends(get_db),
+):
+    envelope = _load_or_404(redis_conn, body.session_id)
+    _require_finalized(envelope)
+
+    name = body.name.strip() or "Без названия"
+    session = envelope.session
+    try:
+        return create_project(
+            engine,
+            user_id,
+            name,
+            session.entity_column,
+            session.metric_column,
+            session.tree,
+        )
+    except ProjectLimitError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/projects")
+def get_projects(user_id: str = Depends(require_user), engine: Engine = Depends(get_db)):
+    return list_projects(engine, user_id)
+
+
+@app.get("/api/projects/{project_id}")
+def get_one_project(project_id: str, user_id: str = Depends(require_user), engine: Engine = Depends(get_db)):
+    try:
+        return get_project(engine, user_id, project_id)
+    except ProjectNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/session/{session_id}/load-project/{project_id}")
+def load_project_into_session(
+    session_id: str,
+    project_id: str,
+    user_id: str = Depends(require_user),
+    redis_conn: Redis = Depends(get_redis),
+    engine: Engine = Depends(get_db),
+):
+    """The actual point of the whole Projects feature: pull a saved
+    tree+dictionary into a freshly-uploaded working session, BEFORE the
+    user starts sorting anything, so only genuinely new entities need
+    manual attention this time around.
+
+    Must run after /columns (the session needs entity_column resolved to
+    know the current file's unique entity values) and before the user
+    touches the tree UI — loading later would silently discard whatever
+    tree they'd already started building in this session.
+    """
+    envelope = _load_or_404(redis_conn, session_id)
+    _require_finalized(envelope)
+
+    try:
+        tree = get_project_tree(engine, user_id, project_id)
+    except ProjectNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    session = envelope.session
+    # "Known" = every entity the project's dictionary has ever assigned a
+    # group to. Anything else in the newly-uploaded file is genuinely new
+    # to this project and needs a human to sort it — core.tree's own
+    # detect_new_entities() is the single source of truth for that split,
+    # not a hand-rolled set difference here.
+    previously_known = set(tree.assignment.keys())
+    current_entities = sorted({v for v in session.df[session.entity_column].to_list() if v is not None})
+    new_entities = tree.detect_new_entities(current_entities, previously_known)
+
+    session.tree = tree
+    # Only the project's OWN dictionary counts as "known" here — NOT the
+    # full current_entities list. Entities that are new to the project
+    # must keep is_new=True (see core.session.Session.unique_entities)
+    # until the user actually assigns them, which is what shows the
+    # "новое" badge in the UI and is exactly the signal this endpoint's
+    # response surfaces below.
+    session._previously_known_entities = previously_known
+
+    save_session(redis_conn, session_id, session, envelope.finalized, envelope.header_row_index)
+
+    return {
+        "project_id": project_id,
+        "known_entities_count": len(current_entities) - len(new_entities),
+        "new_entities": new_entities,
+        "new_entities_count": len(new_entities),
+    }

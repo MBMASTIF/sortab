@@ -120,6 +120,16 @@ def test_full_workflow_reconciles_and_exports_correctly(client):
     create_group("underwear", "Бельё", "clothes")
     create_group("shoes", "Обувь")
 
+    # --- GET /groups: lets a client rebuild the tree after a hard reload
+    # (the whole point of this endpoint — see backend/main.py get_groups)
+    groups_resp = client.get(f"/api/session/{session_id}/groups")
+    assert groups_resp.status_code == 200
+    groups_by_id = {g["id"]: g for g in groups_resp.json()}
+    assert set(groups_by_id) == {"clothes", "socks", "underwear", "shoes"}
+    assert groups_by_id["socks"]["parent_id"] == "clothes"
+    assert groups_by_id["socks"]["name"] == "Носки"
+    assert groups_by_id["clothes"]["parent_id"] is None
+
     # duplicate group id must be rejected, not silently overwrite
     dup_resp = client.post(
         f"/api/session/{session_id}/groups",
@@ -241,6 +251,7 @@ def test_unknown_session_returns_404_everywhere(client):
     assert client.get(f"/api/session/{fake_id}/entities").status_code == 404
     assert client.get(f"/api/session/{fake_id}/summary").status_code == 404
     assert client.get(f"/api/session/{fake_id}/export").status_code == 404
+    assert client.get(f"/api/session/{fake_id}/groups").status_code == 404
     assert (
         client.post(f"/api/session/{fake_id}/groups", json={"group_id": "g1", "name": "Тест"}).status_code
         == 404
