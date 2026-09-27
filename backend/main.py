@@ -18,6 +18,7 @@ import uuid
 from decimal import Decimal
 from pathlib import Path
 
+import polars as pl
 from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -32,7 +33,7 @@ from backend.auth import (
     create_auth_token,
     resolve_user_id,
 )
-from backend.columns import ColumnMappingError, finalize_columns
+from backend.columns import ColumnMappingError, finalize_columns, promote_header_row, resolve_unpivot_columns
 from backend.db import get_engine
 from backend.projects_store import (
     ProjectLimitError,
@@ -50,10 +51,13 @@ from backend.session_store import (
     load_session,
     save_session,
 )
-from core.export import build_detail_sheet, build_summary_sheet, export_workbook
+from backend.tools_store import ToolFileStore, ToolTokenNotFoundError, get_tool_store
+from core.compare import compare_entities
+from core.export import build_detail_sheet, build_summary_sheet, export_single_sheet, export_workbook
 from core.parsing import UnsupportedFileError, parse_file_raw
 from core.session import Session, SessionError
 from core.tree import GroupNotEmptyError, NotALeafError, TreeError
+from core.unpivot import UnpivotError, unpivot_table
 
 app = FastAPI(title="gruper API")
 
@@ -70,6 +74,14 @@ def get_db() -> Engine:
     """FastAPI dependency. Overridden in tests (dependency_overrides) with
     an in-memory SQLite engine, mirroring get_redis() above."""
     return get_engine()
+
+
+def get_tools_store() -> ToolFileStore:
+    """FastAPI dependency for the Инструменты preview->commit token store
+    (backend/tools_store.py) — deliberately NOT Redis, see that module's
+    docstring. Overridden in tests with a fresh ToolFileStore() instance so
+    tests never share state with each other or a running server."""
+    return get_tool_store()
 
 
 def require_user(request: Request, redis_conn: Redis = Depends(get_redis)) -> str:
@@ -111,6 +123,24 @@ class IdentifyRequest(BaseModel):
 class CreateProjectRequest(BaseModel):
     session_id: str
     name: str
+
+
+class UnpivotRequest(BaseModel):
+    token: str
+    header_row_index: int
+    id_columns: list[int]
+    value_columns: list[int]
+
+
+class CompareRequest(BaseModel):
+    token_a: str
+    header_row_index_a: int
+    entity_column_a: int
+    metric_column_a: int
+    token_b: str
+    header_row_index_b: int
+    entity_column_b: int
+    metric_column_b: int
 
 
 def _decimal_str(value: Decimal) -> str:
@@ -435,3 +465,164 @@ def load_project_into_session(
         "new_entities": new_entities,
         "new_entities_count": len(new_entities),
     }
+
+
+# ---------------------------------------------------------------------
+# Инструменты (Unpivot, Compare) — see README "Архитектура интерфейса":
+# one-off, stateless, anonymous utilities, deliberately NOT part of the
+# Project pipeline above. No Redis session, no auth, nothing persisted —
+# see backend/tools_store.py's docstring for why an in-process token store
+# is the right amount of state here (just enough to survive the short
+# upload -> pick columns -> download sitting) and not a Redis session.
+# ---------------------------------------------------------------------
+
+
+@app.post("/api/tools/preview")
+async def tools_preview(file: UploadFile = File(...), store: ToolFileStore = Depends(get_tools_store)):
+    """Shared first step for both Инструменты: parse the upload header-
+    agnostically (exact same core.parsing.parse_file_raw() the main
+    pipeline's /api/upload uses) and hand back a preview grid plus a
+    short-lived token identifying the parsed table in memory. No
+    session_id, no Redis — see backend/tools_store.py."""
+    suffix = Path(file.filename or "").suffix.lower()
+    contents = await file.read()
+
+    tmp_path: str
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(contents)
+        tmp_path = tmp.name
+
+    try:
+        parsed = parse_file_raw(tmp_path)
+    except UnsupportedFileError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        os.unlink(tmp_path)
+
+    token = store.put(parsed.df)
+    preview_rows = [list(row) for row in parsed.df.head(PREVIEW_ROW_LIMIT).rows()]
+
+    return {
+        "token": token,
+        "filename": file.filename,
+        "columns_count": parsed.df.width,
+        "row_count": parsed.df.height,
+        "preview_rows": preview_rows,
+        "detected_encoding": parsed.detected_encoding,
+        "detected_delimiter": parsed.detected_delimiter,
+    }
+
+
+def _load_tool_df(store: ToolFileStore, token: str):
+    try:
+        return store.get(token)
+    except ToolTokenNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/tools/unpivot")
+def tools_unpivot(body: UnpivotRequest, store: ToolFileStore = Depends(get_tools_store)):
+    raw_df = _load_tool_df(store, body.token)
+
+    try:
+        data_df, column_names = promote_header_row(raw_df, body.header_row_index)
+        id_names, value_names = resolve_unpivot_columns(column_names, body.id_columns, body.value_columns)
+        long_df = unpivot_table(data_df, id_names, value_names)
+    except (ColumnMappingError, UnpivotError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
+    tmp.close()
+    export_single_sheet(tmp.name, long_df, sheet_name="Развёрнуто")
+
+    return FileResponse(
+        tmp.name,
+        filename="gruper_unpivot.xlsx",
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        background=BackgroundTask(os.unlink, tmp.name),
+    )
+
+
+def _run_compare(body: CompareRequest, store: ToolFileStore):
+    """Shared by /api/tools/compare (returns JSON) and .../compare/export
+    (returns a file): both need the exact same two-file parse + match, so
+    this is computed once here rather than duplicated. Recomputing per
+    request (instead of caching the result behind a second token) is a
+    deliberate simplicity choice — see README-equivalent commit message:
+    Compare's input files are already small enough (same class as the main
+    pipeline's Excel/CSV) that redoing the match on export is cheap, and it
+    avoids a second kind of stored state for a one-shot tool."""
+    raw_a = _load_tool_df(store, body.token_a)
+    raw_b = _load_tool_df(store, body.token_b)
+
+    try:
+        data_a, entity_col_a, metric_col_a = finalize_columns(
+            raw_a, body.header_row_index_a, body.entity_column_a, body.metric_column_a
+        )
+        data_b, entity_col_b, metric_col_b = finalize_columns(
+            raw_b, body.header_row_index_b, body.entity_column_b, body.metric_column_b
+        )
+    except ColumnMappingError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    entities_a = data_a[entity_col_a].to_list()
+    values_a = [Decimal(str(v)) for v in data_a[metric_col_a].to_list()]
+    entities_b = data_b[entity_col_b].to_list()
+    values_b = [Decimal(str(v)) for v in data_b[metric_col_b].to_list()]
+
+    return compare_entities(entities_a, values_a, entities_b, values_b)
+
+
+@app.post("/api/tools/compare")
+def tools_compare(body: CompareRequest, store: ToolFileStore = Depends(get_tools_store)):
+    rows = _run_compare(body, store)
+
+    def row_json(r):
+        return {
+            "entity": r.entity,
+            "sum_a": _decimal_str(r.sum_a) if r.sum_a is not None else None,
+            "sum_b": _decimal_str(r.sum_b) if r.sum_b is not None else None,
+            "diff": _decimal_str(r.diff) if r.diff is not None else None,
+            "status": r.status,
+        }
+
+    total_a = sum((r.sum_a for r in rows if r.sum_a is not None), Decimal(0))
+    total_b = sum((r.sum_b for r in rows if r.sum_b is not None), Decimal(0))
+
+    return {
+        "rows": [row_json(r) for r in rows],
+        "summary": {
+            "matched": sum(1 for r in rows if r.status == "совпадает"),
+            "mismatched": sum(1 for r in rows if r.status == "расхождение"),
+            "only_a": sum(1 for r in rows if r.status == "только в A"),
+            "only_b": sum(1 for r in rows if r.status == "только в B"),
+            "total_a": _decimal_str(total_a),
+            "total_b": _decimal_str(total_b),
+        },
+    }
+
+
+@app.post("/api/tools/compare/export")
+def tools_compare_export(body: CompareRequest, store: ToolFileStore = Depends(get_tools_store)):
+    rows = _run_compare(body, store)
+
+    result_df = pl.DataFrame(
+        {
+            "Сущность": [r.entity for r in rows],
+            "Сумма A": [_decimal_str(r.sum_a) if r.sum_a is not None else "" for r in rows],
+            "Сумма B": [_decimal_str(r.sum_b) if r.sum_b is not None else "" for r in rows],
+            "Разница": [_decimal_str(r.diff) if r.diff is not None else "" for r in rows],
+            "Статус": [r.status for r in rows],
+        }
+    )
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
+    tmp.close()
+    export_single_sheet(tmp.name, result_df, sheet_name="Расхождения")
+
+    return FileResponse(
+        tmp.name,
+        filename="gruper_compare.xlsx",
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        background=BackgroundTask(os.unlink, tmp.name),
+    )

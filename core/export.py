@@ -111,3 +111,13 @@ def export_workbook(
     detail_df.write_excel(workbook=wb, worksheet="Детализация")
     summary_df.write_excel(workbook=wb, worksheet="Итоги")
     wb.close()
+
+
+def export_single_sheet(path: str, df: pl.DataFrame, sheet_name: str) -> None:
+    """One-sheet workbook — used by the Инструменты (Unpivot, Compare),
+    which don't have the Project pipeline's Детализация/Итоги two-sheet
+    shape (see backend/main.py's /api/tools/* endpoints): there's no group
+    tree to roll up here, just one flat result table to hand back."""
+    wb = xlsxwriter.Workbook(path)
+    df.write_excel(workbook=wb, worksheet=sheet_name)
+    wb.close()
