@@ -535,7 +535,17 @@
       let detail = `Ошибка (${resp.status})`;
       try {
         const body = await resp.json();
-        if (body.detail) detail = body.detail;
+        // FastAPI sends a plain string detail for our own HTTPException()
+        // calls, but a 422 from Pydantic's own request validation sends
+        // detail as an ARRAY of {msg, loc, ...} objects instead — passing
+        // that straight to new Error() stringified it to "[object Object]"
+        // in the alert() the user saw, found live on a real file (tried to
+        // assign an entity with a blank/null name, which list[str] rejects).
+        if (Array.isArray(body.detail)) {
+          detail = body.detail.map(d => d.msg || JSON.stringify(d)).join('; ');
+        } else if (body.detail) {
+          detail = body.detail;
+        }
       } catch (e) { /* non-JSON error body */ }
       const err = new Error(detail);
       err.status = resp.status;
@@ -636,7 +646,11 @@
     const unassigned = state.entities.filter(e => !state.assignedGroup.has(e.value));
     document.getElementById('unassignedCount').textContent = unassigned.length;
 
-    const filtered = unassigned.filter(e => e.value.toLowerCase().includes(search));
+    // e.value can be null (a genuinely blank cell in a real 1C export —
+    // see the "(пусто)" label below) — .toLowerCase() on null threw and
+    // silently aborted the whole render (list AND totals, since they're
+    // rendered later in the same call chain), found live on a real file.
+    const filtered = unassigned.filter(e => (e.value ?? '').toLowerCase().includes(search));
     if (filtered.length === 0) {
       list.innerHTML = `<div class="empty-state">${unassigned.length === 0 ? 'Все значения распределены' : 'Ничего не найдено'}</div>`;
       return;
@@ -644,10 +658,21 @@
     filtered.forEach(e => {
       const row = document.createElement('label');
       row.className = 'entity-row';
+      const isBlank = e.value === null || e.value === undefined || e.value === '';
 
       const checkbox = document.createElement('input');
       checkbox.type = 'checkbox';
       checkbox.checked = state.selected.has(e.value);
+      if (isBlank) {
+        // A blank/null value isn't a valid entity id for the API (list[str]
+        // rejects null — see apiFetch's 422 handling above), and there's no
+        // meaningful category for "no product name" anyway. Disable rather
+        // than let the user hit a confusing failed-assign: it still counts
+        // correctly in "Не распределено" either way, money isn't lost.
+        checkbox.disabled = true;
+        row.title = 'Пустое значение нельзя распределить в категорию — оно останется в «Не распределено», но учтено в сумме';
+        row.style.opacity = '0.55';
+      }
       checkbox.addEventListener('change', ev => {
         if (ev.target.checked) state.selected.add(e.value); else state.selected.delete(e.value);
         renderBulkBar();
@@ -655,7 +680,12 @@
 
       const nameSpan = document.createElement('span');
       nameSpan.className = 'entity-name';
-      nameSpan.textContent = e.value; // textContent, not innerHTML — real values can contain any characters
+      // isBlank declared once above (used for the checkbox-disable logic
+      // too). textContent (not innerHTML) — real values can contain any
+      // characters; null renders as an explicit "(пусто)" label instead of
+      // a blank-looking line.
+      nameSpan.textContent = isBlank ? '(пусто)' : e.value;
+      if (isBlank) nameSpan.style.fontStyle = 'italic';
 
       const metaSpan = document.createElement('span');
       metaSpan.className = 'entity-meta mono';

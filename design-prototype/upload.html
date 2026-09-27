@@ -80,8 +80,22 @@
     margin-bottom: 20px;
   }
   .preview-scroll { overflow-x: auto; }
-  table.preview { border-collapse: collapse; width: 100%; font-size: 13.5px; }
-  table.preview td, table.preview th { padding: 10px 14px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--rule-light); }
+  table.preview { border-collapse: collapse; width: 100%; font-size: 13.5px; table-layout: fixed; }
+  table.preview td, table.preview th { padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--rule-light); width: 200px; }
+
+  /* Long cell values (a filter-description cell in a real 1C export can run
+     to hundreds of characters) used to force the whole table wide enough
+     that reaching any other column meant scrolling forever — reported live.
+     Cap each cell's own width and ellipsize; hover (title attr) still shows
+     the full value, so nothing is actually hidden, just not force-fed into
+     the layout. */
+  .cell-text {
+    display: block;
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 
   .col-head {
     cursor: pointer;
@@ -89,11 +103,50 @@
     border-bottom: 2px solid var(--rule);
     background: var(--paper-raised);
     transition: background 0.15s ease;
+    position: relative;
   }
   .col-head:hover .col-head-inner { background: var(--rule-light); }
   .col-head-inner { display: flex; flex-direction: column; gap: 4px; padding: 2px 0; border-radius: 6px; }
   .col-head .col-name { font-weight: 600; }
   .col-head .col-role { font-size: 11px; color: var(--ink-soft); height: 14px; }
+
+  /* ---------- Role menu — explicit choice on click, not a hidden cycle.
+     Real feedback: clicking a column changed something but people couldn't
+     tell what, especially once a 3rd role (разбивка) joined the original
+     2. A visible menu with named options replaces guessing at click count. ---------- */
+  .role-menu {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: 6px;
+    background: #fff;
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    box-shadow: 0 10px 28px rgba(26,34,51,0.14);
+    min-width: 220px;
+    z-index: 50;
+    overflow: hidden;
+    cursor: default;
+  }
+  .role-menu-option {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 11px 14px;
+    cursor: pointer;
+    font-size: 13.5px;
+    font-weight: 500;
+    color: var(--ink);
+    white-space: normal;
+  }
+  .role-menu-option:hover { background: var(--paper-raised); }
+  .role-menu-option .swatch { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+  .role-menu-option .swatch.none { background: var(--rule); }
+  .role-menu-option .label { flex: 1; }
+  .role-menu-option .desc { display: block; font-size: 11.5px; font-weight: 400; color: var(--ink-soft); margin-top: 1px; }
+  .role-menu-option.active { background: rgba(22,167,107,0.08); }
+  .role-menu-option .check { color: var(--ledger-line); font-weight: 700; }
+  .role-menu-divider { height: 1px; background: var(--rule-light); }
   .col-head.picked-categorize { background: rgba(22,167,107,0.12); }
   .col-head.picked-categorize .col-role { color: var(--ledger-line); font-weight: 600; }
   .col-head.picked-metric { background: rgba(232,84,61,0.12); }
@@ -242,12 +295,22 @@
   let sessionId = null;
 
   let headerRowIndex = 0;
-  // per-column role, cycled on click: null -> 'categorize' -> 'dimension'
-  // -> 'metric' -> null. 'categorize' and 'dimension' can be on any
-  // number of columns at once (a session can build several independent
-  // category trees, see core/session.py); 'metric' is singular — picking
-  // it on a new column clears it from wherever it was before.
+  // per-column role, set via an explicit menu (see ROLE_OPTIONS below), not
+  // a click-cycle — real feedback was that a hidden cycle through 4 states
+  // was unreadable once a 3rd role joined the original 2. 'categorize' and
+  // 'dimension' can be on any number of columns at once (a session can
+  // build several independent category trees, see core/session.py);
+  // 'metric' is singular — picking it on a new column clears it from
+  // wherever it was before.
   let columnRoles = [];
+  let openMenuColIdx = null;
+
+  const ROLE_OPTIONS = [
+    { role: 'categorize', label: 'Категоризировать', desc: 'Построить дерево категорий для этой колонки', color: 'var(--ledger-line)' },
+    { role: 'dimension', label: 'Разбивка', desc: 'Показать в итогах как разрез, без дерева', color: 'var(--dimension)' },
+    { role: 'metric', label: 'Это сумма', desc: 'Значения этой колонки будем складывать', color: 'var(--stamp)' },
+    { role: null, label: 'Не использовать', desc: 'Колонка не участвует в разборе', color: 'var(--rule)' },
+  ];
 
   function headerCells() { return rawRows[headerRowIndex] || []; }
 
@@ -334,7 +397,7 @@
 
     document.getElementById('fileNameLabel').textContent = body.filename || file.name;
     document.getElementById('pageTitle').textContent = 'Какие колонки разбирать?';
-    document.getElementById('pageHint').textContent = 'Кликните по строке, где на самом деле начинаются заголовки — а затем по колонкам ниже: раз — «категоризировать» (дерево), два — «разбивка» (без дерева), три — «сумма», четыре — сброс';
+    document.getElementById('pageHint').textContent = 'Кликните по строке, где на самом деле начинаются заголовки — а затем по названию каждой колонки ниже, чтобы выбрать для неё роль';
 
     document.getElementById('uploadZone').classList.add('hidden');
     document.getElementById('pickWorkspace').classList.remove('hidden');
@@ -382,20 +445,23 @@
       const role = columnRoles[colIdx];
       if (role) th.classList.add('picked-' + role);
       const roleLabel = { categorize: 'Категоризировать', dimension: 'Разбивка', metric: 'Сумма' }[role] || '';
+      const nameText = (label === null || label === undefined || label === '') ? '—' : String(label);
       // Built via DOM APIs, not innerHTML — the label text comes straight
       // from the uploaded file's cell content, which is untrusted input.
       const inner = document.createElement('div');
       inner.className = 'col-head-inner';
       const nameSpan = document.createElement('span');
-      nameSpan.className = 'col-name';
-      nameSpan.textContent = (label === null || label === undefined || label === '') ? '—' : String(label);
+      nameSpan.className = 'col-name cell-text';
+      nameSpan.textContent = nameText;
+      nameSpan.title = nameText;
       const roleSpan = document.createElement('span');
       roleSpan.className = 'col-role';
       roleSpan.textContent = roleLabel;
       inner.appendChild(nameSpan);
       inner.appendChild(roleSpan);
       th.appendChild(inner);
-      th.addEventListener('click', () => cycleColumnRole(colIdx));
+      th.addEventListener('click', e => toggleRoleMenu(colIdx, e));
+      if (openMenuColIdx === colIdx) th.appendChild(buildRoleMenu(colIdx));
       thead.appendChild(th);
     });
     table.appendChild(thead);
@@ -412,16 +478,24 @@
         const role = columnRoles[colIdx];
         if (role) td.classList.add('picked-' + role);
         const cellText = cell === null || cell === undefined ? '' : String(cell);
+        // DOM APIs, not innerHTML — cellText is untrusted file content.
+        // Wrapped in a span (not the td itself) so the ellipsis truncation
+        // doesn't clip the role-menu popover, which is a child of <th> in
+        // the header row — a td here has no popover, but sharing one class
+        // keeps every cell's overflow behavior consistent.
+        const span = document.createElement('span');
+        span.className = 'cell-text';
+        span.title = cellText;
         if (colIdx === 0 && isDecor) {
-          // DOM APIs, not innerHTML — cellText is untrusted file content.
           const flag = document.createElement('span');
           flag.className = 'row-flag';
           flag.textContent = 'не заголовок?';
-          td.appendChild(flag);
-          td.appendChild(document.createTextNode(cellText));
+          span.appendChild(flag);
+          span.appendChild(document.createTextNode(cellText));
         } else {
-          td.textContent = cellText;
+          span.textContent = cellText;
         }
+        td.appendChild(span);
         tr.appendChild(td);
       });
       table.appendChild(tr);
@@ -442,20 +516,70 @@
     render();
   }
 
-  function cycleColumnRole(colIdx) {
-    const current = columnRoles[colIdx];
-    const next = current === null ? 'categorize'
-      : current === 'categorize' ? 'dimension'
-      : current === 'dimension' ? 'metric'
-      : null;
-    if (next === 'metric') {
+  function toggleRoleMenu(colIdx, event) {
+    event.stopPropagation();
+    openMenuColIdx = (openMenuColIdx === colIdx) ? null : colIdx;
+    render();
+  }
+
+  function closeRoleMenu() {
+    if (openMenuColIdx !== null) {
+      openMenuColIdx = null;
+      render();
+    }
+  }
+
+  function buildRoleMenu(colIdx) {
+    const menu = document.createElement('div');
+    menu.className = 'role-menu';
+    menu.addEventListener('click', e => e.stopPropagation());
+    ROLE_OPTIONS.forEach((opt, i) => {
+      const item = document.createElement('div');
+      item.className = 'role-menu-option' + (columnRoles[colIdx] === opt.role ? ' active' : '');
+      const swatch = document.createElement('span');
+      swatch.className = 'swatch';
+      swatch.style.background = opt.color;
+      const textWrap = document.createElement('span');
+      textWrap.className = 'label';
+      const labelLine = document.createElement('span');
+      labelLine.textContent = opt.label;
+      const descLine = document.createElement('span');
+      descLine.className = 'desc';
+      descLine.textContent = opt.desc;
+      textWrap.appendChild(labelLine);
+      textWrap.appendChild(descLine);
+      item.appendChild(swatch);
+      item.appendChild(textWrap);
+      if (columnRoles[colIdx] === opt.role) {
+        const check = document.createElement('span');
+        check.className = 'check';
+        check.textContent = '✓';
+        item.appendChild(check);
+      }
+      item.addEventListener('click', () => setColumnRole(colIdx, opt.role));
+      menu.appendChild(item);
+      if (i === ROLE_OPTIONS.length - 2) {
+        const divider = document.createElement('div');
+        divider.className = 'role-menu-divider';
+        menu.appendChild(divider);
+      }
+    });
+    return menu;
+  }
+
+  function setColumnRole(colIdx, role) {
+    if (role === 'metric') {
       // metric is singular — picking it here clears it from wherever it
       // was before (categorize/dimension stay multi-valued, no such clear).
       columnRoles = columnRoles.map(r => r === 'metric' ? null : r);
     }
-    columnRoles[colIdx] = next;
+    columnRoles[colIdx] = role;
+    openMenuColIdx = null;
     render();
   }
+
+  document.addEventListener('click', closeRoleMenu);
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeRoleMenu(); });
 
   function columnsWithRole(role) {
     return columnRoles.map((r, i) => r === role ? i : -1).filter(i => i >= 0);

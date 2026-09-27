@@ -389,7 +389,12 @@ def get_summary(session_id: str, column: str, redis_conn: Redis = Depends(get_re
         "direct_totals": {k: _decimal_str(v) for k, v in result.direct_totals.items()},
         "rollup_totals": {k: _decimal_str(v) for k, v in result.rollup_totals.items()},
         "unassigned_total": _decimal_str(result.unassigned_total),
-        "unassigned_entities": sorted({r.entity for r in result.unassigned_rows}),
+        # Real 1C exports can have genuinely blank entity cells (subtotal
+        # rows, merged-cell artifacts) — entity is None for those. A plain
+        # sorted() on a set mixing None and str raises TypeError (found live
+        # on a real file: "'<' not supported between NoneType and str").
+        # Sort key treats None as its own bucket instead of crashing.
+        "unassigned_entities": sorted({r.entity for r in result.unassigned_rows}, key=lambda e: (e is None, e)),
         "grand_total": _decimal_str(result.grand_total(groups)),
     }
 
