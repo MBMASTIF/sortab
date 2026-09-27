@@ -1,0 +1,668 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>gruper — сравнение файлов</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #FAFAF8;
+    --paper-raised: #F2F3EF;
+    --ink: #1A2233;
+    --ink-soft: #5B6472;
+    --stamp: #E8543D;
+    --stamp-dark: #CC4530;
+    --ledger-line: #16A76B;
+    --rule: #E2E4DE;
+    --rule-light: #EDEEE9;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: 'IBM Plex Sans', sans-serif;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono { font-family: 'IBM Plex Mono', monospace; }
+
+  header {
+    padding: 16px 32px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--rule);
+    background: #fff;
+  }
+  .logo { font-weight: 700; font-size: 18px; display: flex; align-items: center; gap: 8px; text-decoration: none; color: var(--ink); }
+  .logo-mark { width: 22px; height: 22px; border-radius: 7px; background: linear-gradient(135deg, var(--ledger-line), #0E8058); display: inline-block; }
+  .back-link { font-size: 13.5px; color: var(--ink-soft); text-decoration: none; }
+  .back-link:hover { color: var(--ink); }
+
+  .workspace { max-width: 1080px; margin: 0 auto; padding: 28px 32px 140px; }
+
+  .toolbar h1 { font-size: 22px; font-weight: 700; margin-bottom: 4px; }
+  .toolbar .hint { font-size: 14px; color: var(--ink-soft); margin-bottom: 10px; }
+
+  .step-track { display: flex; gap: 8px; margin-bottom: 24px; }
+  .step-dot {
+    display: flex; align-items: center; gap: 7px;
+    font-size: 12.5px; color: var(--ink-soft);
+    padding: 6px 12px;
+    border-radius: 999px;
+    background: var(--paper-raised);
+    border: 1px solid var(--rule);
+  }
+  .step-dot.active { color: var(--ink); font-weight: 600; border-color: var(--ledger-line); background: rgba(22,167,107,0.08); }
+  .step-dot.done { color: var(--ledger-line); }
+  .step-num { width: 16px; height: 16px; border-radius: 50%; background: var(--rule); color: #fff; font-size: 10px; display: flex; align-items: center; justify-content: center; font-weight: 700; }
+  .step-dot.active .step-num, .step-dot.done .step-num { background: var(--ledger-line); }
+
+  .hidden { display: none !important; }
+
+  /* ---------- Upload zone ---------- */
+  .upload-zone {
+    background: #fff;
+    border: 2px dashed var(--rule);
+    border-radius: 16px;
+    padding: 56px 32px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  .upload-zone:hover, .upload-zone.drag-over { border-color: var(--ledger-line); background: rgba(22,167,107,0.04); }
+  .upload-zone .upload-title { font-size: 16px; font-weight: 600; margin-bottom: 6px; }
+  .upload-zone .upload-hint { font-size: 13.5px; color: var(--ink-soft); }
+  .upload-zone .upload-error { margin-top: 14px; font-size: 13.5px; color: var(--stamp-dark); font-weight: 600; }
+  .spinner-line { font-size: 13.5px; color: var(--ink-soft); padding: 24px; text-align: center; }
+
+  /* ---------- Legend / pick state ---------- */
+  .pick-row { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+  .pick-chip {
+    display: flex; align-items: center; gap: 8px;
+    padding: 9px 14px;
+    border-radius: 10px;
+    border: 1.5px solid var(--rule);
+    background: #fff;
+    font-size: 13.5px;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  .pick-chip .swatch { width: 11px; height: 11px; border-radius: 3px; flex-shrink: 0; }
+  .pick-chip.entity .swatch { background: var(--ledger-line); }
+  .pick-chip.metric .swatch { background: var(--stamp); }
+  .pick-chip .value { font-weight: 600; }
+  .pick-chip .placeholder { color: var(--ink-soft); font-weight: 400; }
+  .pick-chip.done.entity { border-color: var(--ledger-line); background: rgba(22,167,107,0.06); }
+  .pick-chip.done.metric { border-color: var(--stamp); background: rgba(232,84,61,0.06); }
+
+  /* ---------- Preview table ---------- */
+  .preview-card {
+    background: #fff;
+    border: 1px solid var(--rule);
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: 0 2px 8px rgba(26, 34, 51, 0.04);
+    margin-bottom: 20px;
+  }
+  .preview-scroll { overflow-x: auto; max-height: 420px; }
+  table.preview { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  table.preview td, table.preview th { padding: 10px 14px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--rule-light); }
+
+  .col-head { cursor: pointer; user-select: none; border-bottom: 2px solid var(--rule); background: var(--paper-raised); transition: background 0.15s ease; }
+  .col-head:hover .col-head-inner { background: var(--rule-light); }
+  .col-head-inner { display: flex; flex-direction: column; gap: 4px; padding: 2px 0; border-radius: 6px; }
+  .col-head .col-name { font-weight: 600; }
+  .col-head .col-role { font-size: 11px; color: var(--ink-soft); height: 14px; }
+  .col-head.picked-entity { background: rgba(22,167,107,0.12); }
+  .col-head.picked-entity .col-role { color: var(--ledger-line); font-weight: 600; }
+  .col-head.picked-metric { background: rgba(232,84,61,0.12); }
+  .col-head.picked-metric .col-role { color: var(--stamp-dark); font-weight: 600; }
+  td.picked-entity { background: rgba(22,167,107,0.05); }
+  td.picked-metric { background: rgba(232,84,61,0.05); }
+
+  tr.header-row-candidate { cursor: pointer; }
+  tr.header-row-candidate:hover td { background: var(--paper-raised); }
+  tr.header-row-candidate.is-decor td { color: var(--ink-soft); font-style: italic; }
+
+  .row-flag { display: inline-block; font-size: 10.5px; font-weight: 600; color: #fff; background: var(--ink); padding: 2px 7px; border-radius: 999px; margin-right: 8px; }
+  .table-hint { padding: 12px 14px; font-size: 12.5px; color: var(--ink-soft); border-top: 1px solid var(--rule-light); background: var(--paper-raised); }
+
+  .btn-primary {
+    background: var(--ink);
+    border: none;
+    color: #fff;
+    padding: 11px 22px;
+    border-radius: 9px;
+    font-weight: 600;
+    font-size: 14px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .btn-primary.is-disabled { background: #A6ACB8; cursor: not-allowed; }
+  .btn-primary:not(.is-disabled):hover { background: #0E1524; }
+
+  /* ---------- Results ---------- */
+  .summary-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+  .summary-pill { padding: 10px 16px; border-radius: 12px; border: 1px solid var(--rule); background: #fff; font-size: 13px; }
+  .summary-pill .num { font-family: 'IBM Plex Mono', monospace; font-weight: 600; font-size: 15px; display: block; }
+  .summary-pill.match { border-color: var(--ledger-line); }
+  .summary-pill.mismatch { border-color: var(--stamp); }
+
+  table.results { border-collapse: collapse; width: 100%; font-size: 13.5px; background: #fff; }
+  table.results th { text-align: left; padding: 10px 14px; background: var(--paper-raised); border-bottom: 2px solid var(--rule); font-weight: 600; }
+  table.results td { padding: 10px 14px; border-bottom: 1px solid var(--rule-light); }
+  table.results tr:last-child td { border-bottom: none; }
+  .num-cell { font-family: 'IBM Plex Mono', monospace; text-align: right; }
+
+  .status-badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .status-match { background: rgba(22,167,107,0.12); color: #0E7A4F; }
+  .status-mismatch { background: rgba(232,84,61,0.14); color: var(--stamp-dark); }
+  .status-only_a { background: rgba(26,34,51,0.08); color: var(--ink-soft); }
+  .status-only_b { background: rgba(26,34,51,0.08); color: var(--ink-soft); }
+
+  .results-actions { display: flex; justify-content: space-between; align-items: center; margin: 20px 0; }
+  .results-card { border: 1px solid var(--rule); border-radius: 16px; overflow: hidden; background: #fff; box-shadow: 0 2px 8px rgba(26, 34, 51, 0.04); }
+  .results-scroll { overflow-x: auto; max-height: 560px; }
+
+  .restart-link { font-size: 13px; color: var(--ink-soft); text-decoration: underline; cursor: pointer; background: none; border: none; font-family: inherit; padding: 0; }
+</style>
+</head>
+<body>
+
+<header>
+  <a class="logo" href="index.html"><span class="logo-mark"></span>gruper</a>
+  <a class="back-link" href="dashboard.html">← Инструменты</a>
+</header>
+
+<div class="workspace">
+  <div class="toolbar">
+    <h1>Сравнение файлов</h1>
+    <p class="hint">Найдём расхождения между двумя отчётами: что совпадает, где разная сумма, что есть только в одном файле</p>
+  </div>
+
+  <div class="step-track">
+    <div class="step-dot" id="stepDotA"><span class="step-num">1</span> Файл A</div>
+    <div class="step-dot" id="stepDotB"><span class="step-num">2</span> Файл B</div>
+    <div class="step-dot" id="stepDotResults"><span class="step-num">3</span> Результат</div>
+  </div>
+
+  <!-- ---------- Step A ---------- -->
+  <section id="stepA">
+    <div class="upload-zone" id="uploadZoneA">
+      <input type="file" id="fileInputA" class="hidden" accept=".xlsx,.xls,.xlsm,.xlsb,.ods,.csv,.txt,.pdf">
+      <div id="uploadIdleA">
+        <div class="upload-title">Файл A — перетащите сюда или нажмите, чтобы выбрать</div>
+        <div class="upload-hint">Например, ваша версия отчёта или период 1</div>
+      </div>
+      <div class="spinner-line hidden" id="uploadSpinnerA">Загружаем и разбираем файл…</div>
+      <div class="upload-error hidden" id="uploadErrorA"></div>
+    </div>
+
+    <div class="hidden" id="pickWorkspaceA">
+      <div class="pick-row">
+        <div class="pick-chip entity" id="chipEntityA">
+          <span class="swatch"></span>
+          <span>Сущность: <span class="value placeholder" id="chipEntityValueA">не выбрано</span></span>
+        </div>
+        <div class="pick-chip metric" id="chipMetricA">
+          <span class="swatch"></span>
+          <span>Сумма: <span class="value placeholder" id="chipMetricValueA">не выбрано</span></span>
+        </div>
+      </div>
+      <div class="preview-card">
+        <div class="preview-scroll"><table class="preview" id="previewTableA"></table></div>
+        <div class="table-hint" id="tableHintA"></div>
+      </div>
+      <div class="results-actions">
+        <span></span>
+        <button class="btn-primary is-disabled" id="continueBtnA">Далее: файл B</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ---------- Step B ---------- -->
+  <section class="hidden" id="stepB">
+    <div class="upload-zone" id="uploadZoneB">
+      <input type="file" id="fileInputB" class="hidden" accept=".xlsx,.xls,.xlsm,.xlsb,.ods,.csv,.txt,.pdf">
+      <div id="uploadIdleB">
+        <div class="upload-title">Файл B — перетащите сюда или нажмите, чтобы выбрать</div>
+        <div class="upload-hint">Например, версия контрагента или период 2</div>
+      </div>
+      <div class="spinner-line hidden" id="uploadSpinnerB">Загружаем и разбираем файл…</div>
+      <div class="upload-error hidden" id="uploadErrorB"></div>
+    </div>
+
+    <div class="hidden" id="pickWorkspaceB">
+      <div class="pick-row">
+        <div class="pick-chip entity" id="chipEntityB">
+          <span class="swatch"></span>
+          <span>Сущность: <span class="value placeholder" id="chipEntityValueB">не выбрано</span></span>
+        </div>
+        <div class="pick-chip metric" id="chipMetricB">
+          <span class="swatch"></span>
+          <span>Сумма: <span class="value placeholder" id="chipMetricValueB">не выбрано</span></span>
+        </div>
+      </div>
+      <div class="preview-card">
+        <div class="preview-scroll"><table class="preview" id="previewTableB"></table></div>
+        <div class="table-hint" id="tableHintB"></div>
+      </div>
+      <div class="results-actions">
+        <button class="restart-link" id="backToABtn">← Назад к файлу A</button>
+        <button class="btn-primary is-disabled" id="continueBtnB">Сравнить</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ---------- Results ---------- -->
+  <section class="hidden" id="stepResults">
+    <div class="spinner-line" id="comparingSpinner">Сравниваем…</div>
+
+    <div class="hidden" id="resultsContent">
+      <div class="summary-row" id="summaryRow"></div>
+      <div class="results-actions">
+        <button class="restart-link" id="restartBtn">↻ Начать сначала</button>
+        <button class="btn-primary" id="downloadBtn">Скачать .xlsx</button>
+      </div>
+      <div class="results-card">
+        <div class="results-scroll">
+          <table class="results" id="resultsTable"></table>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+  const API_BASE = '/api';
+
+  const state = {
+    a: { rawRows: [], totalRowCount: 0, token: null, headerRowIndex: 0, entityCol: null, metricCol: null, filename: '' },
+    b: { rawRows: [], totalRowCount: 0, token: null, headerRowIndex: 0, entityCol: null, metricCol: null, filename: '' },
+  };
+
+  function guessHeaderRow(rows) {
+    if (rows.length < 2) return 0;
+    const filledCount = (row) => row.filter(c => c !== null && c !== undefined && String(c).trim() !== '').length;
+    const row0Filled = filledCount(rows[0]);
+    const row1Filled = filledCount(rows[1]);
+    const looksDecorative = row1Filled >= 2 && row0Filled <= row1Filled / 2;
+    return looksDecorative ? 1 : 0;
+  }
+
+  function headerCells(side) {
+    const s = state[side];
+    return s.rawRows[s.headerRowIndex] || [];
+  }
+
+  // ---------- Upload wiring (generic over side 'a'/'b') ----------
+  function wireUpload(side) {
+    const Side = side.toUpperCase();
+    const zone = document.getElementById(`uploadZone${Side}`);
+    const input = document.getElementById(`fileInput${Side}`);
+
+    zone.addEventListener('click', () => input.click());
+    zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag-over'); });
+    zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+    zone.addEventListener('drop', e => {
+      e.preventDefault();
+      zone.classList.remove('drag-over');
+      if (e.dataTransfer.files.length) handleFile(side, e.dataTransfer.files[0]);
+    });
+    input.addEventListener('change', () => {
+      if (input.files.length) handleFile(side, input.files[0]);
+    });
+  }
+  wireUpload('a');
+  wireUpload('b');
+
+  function showUploadError(side, message) {
+    const Side = side.toUpperCase();
+    document.getElementById(`uploadIdle${Side}`).classList.remove('hidden');
+    document.getElementById(`uploadSpinner${Side}`).classList.add('hidden');
+    const errEl = document.getElementById(`uploadError${Side}`);
+    errEl.textContent = message;
+    errEl.classList.remove('hidden');
+  }
+
+  async function handleFile(side, file) {
+    const Side = side.toUpperCase();
+    document.getElementById(`uploadError${Side}`).classList.add('hidden');
+    document.getElementById(`uploadIdle${Side}`).classList.add('hidden');
+    document.getElementById(`uploadSpinner${Side}`).classList.remove('hidden');
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    let resp;
+    try {
+      resp = await fetch(`${API_BASE}/tools/preview`, { method: 'POST', body: formData });
+    } catch (err) {
+      showUploadError(side, 'Не удалось связаться с сервером: ' + err.message);
+      return;
+    }
+
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({}));
+      showUploadError(side, body.detail || `Ошибка загрузки (${resp.status})`);
+      return;
+    }
+
+    const body = await resp.json();
+    const s = state[side];
+    s.token = body.token;
+    s.rawRows = body.preview_rows;
+    s.totalRowCount = body.row_count;
+    s.headerRowIndex = guessHeaderRow(s.rawRows);
+    s.entityCol = null;
+    s.metricCol = null;
+    s.filename = body.filename || file.name;
+
+    document.getElementById(`uploadZone${Side}`).classList.add('hidden');
+    document.getElementById(`pickWorkspace${Side}`).classList.remove('hidden');
+
+    renderPreview(side);
+  }
+
+  // ---------- Preview / column picking (entity/metric, same 3-state cycle
+  // as design-prototype/upload.html) ----------
+  function renderPreview(side) {
+    const Side = side.toUpperCase();
+    const s = state[side];
+    const table = document.getElementById(`previewTable${Side}`);
+    table.innerHTML = '';
+
+    const thead = document.createElement('tr');
+    headerCells(side).forEach((label, colIdx) => {
+      const th = document.createElement('th');
+      th.className = 'col-head';
+      if (colIdx === s.entityCol) th.classList.add('picked-entity');
+      if (colIdx === s.metricCol) th.classList.add('picked-metric');
+      let role = '';
+      if (colIdx === s.entityCol) role = 'Сущность';
+      if (colIdx === s.metricCol) role = 'Сумма';
+      const inner = document.createElement('div');
+      inner.className = 'col-head-inner';
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'col-name';
+      nameSpan.textContent = (label === null || label === undefined || label === '') ? '—' : String(label);
+      const roleSpan = document.createElement('span');
+      roleSpan.className = 'col-role';
+      roleSpan.textContent = role;
+      inner.appendChild(nameSpan);
+      inner.appendChild(roleSpan);
+      th.appendChild(inner);
+      th.addEventListener('click', () => pickColumn(side, colIdx));
+      thead.appendChild(th);
+    });
+    table.appendChild(thead);
+
+    s.rawRows.forEach((row, rowIdx) => {
+      if (rowIdx === s.headerRowIndex) return;
+      const tr = document.createElement('tr');
+      tr.className = 'header-row-candidate';
+      const isDecor = rowIdx < s.headerRowIndex;
+      if (isDecor) tr.classList.add('is-decor');
+      tr.addEventListener('click', () => setHeaderRow(side, rowIdx));
+      row.forEach((cell, colIdx) => {
+        const td = document.createElement('td');
+        if (colIdx === s.entityCol) td.classList.add('picked-entity');
+        if (colIdx === s.metricCol) td.classList.add('picked-metric');
+        const cellText = cell === null || cell === undefined ? '' : String(cell);
+        if (colIdx === 0 && isDecor) {
+          const flag = document.createElement('span');
+          flag.className = 'row-flag';
+          flag.textContent = 'не заголовок?';
+          td.appendChild(flag);
+          td.appendChild(document.createTextNode(cellText));
+        } else {
+          td.textContent = cellText;
+        }
+        tr.appendChild(td);
+      });
+      table.appendChild(tr);
+    });
+
+    const shownNote = s.totalRowCount > s.rawRows.length
+      ? `Показаны первые ${s.rawRows.length} строк файла — остальные ${s.totalRowCount - s.rawRows.length} разберутся так же`
+      : `Показаны все ${s.rawRows.length} строк файла`;
+    document.getElementById(`tableHint${Side}`).textContent = shownNote;
+
+    updateChips(side);
+  }
+
+  function setHeaderRow(side, rowIdx) {
+    const s = state[side];
+    if (rowIdx === s.headerRowIndex) return;
+    s.headerRowIndex = rowIdx;
+    s.entityCol = null;
+    s.metricCol = null;
+    renderPreview(side);
+  }
+
+  function pickColumn(side, colIdx) {
+    const s = state[side];
+    if (s.entityCol === colIdx) { s.entityCol = null; renderPreview(side); return; }
+    if (s.metricCol === colIdx) { s.metricCol = null; renderPreview(side); return; }
+    if (s.entityCol === null) { s.entityCol = colIdx; }
+    else if (s.metricCol === null) { s.metricCol = colIdx; }
+    else { s.entityCol = colIdx; }
+    renderPreview(side);
+  }
+
+  function updateChips(side) {
+    const Side = side.toUpperCase();
+    const s = state[side];
+    const cells = headerCells(side);
+    const entityChip = document.getElementById(`chipEntity${Side}`);
+    const metricChip = document.getElementById(`chipMetric${Side}`);
+    const entityVal = document.getElementById(`chipEntityValue${Side}`);
+    const metricVal = document.getElementById(`chipMetricValue${Side}`);
+
+    if (s.entityCol !== null) {
+      entityVal.textContent = cells[s.entityCol];
+      entityVal.classList.remove('placeholder');
+      entityChip.classList.add('done');
+    } else {
+      entityVal.textContent = 'не выбрано';
+      entityVal.classList.add('placeholder');
+      entityChip.classList.remove('done');
+    }
+
+    if (s.metricCol !== null) {
+      metricVal.textContent = cells[s.metricCol];
+      metricVal.classList.remove('placeholder');
+      metricChip.classList.add('done');
+    } else {
+      metricVal.textContent = 'не выбрано';
+      metricVal.classList.add('placeholder');
+      metricChip.classList.remove('done');
+    }
+
+    const btn = document.getElementById(`continueBtn${Side}`);
+    if (s.entityCol !== null && s.metricCol !== null) {
+      btn.classList.remove('is-disabled');
+    } else {
+      btn.classList.add('is-disabled');
+    }
+  }
+
+  // ---------- Step navigation ----------
+  function setStep(step) {
+    document.getElementById('stepA').classList.toggle('hidden', step !== 'a');
+    document.getElementById('stepB').classList.toggle('hidden', step !== 'b');
+    document.getElementById('stepResults').classList.toggle('hidden', step !== 'results');
+
+    document.getElementById('stepDotA').classList.toggle('active', step === 'a');
+    document.getElementById('stepDotA').classList.toggle('done', step !== 'a');
+    document.getElementById('stepDotB').classList.toggle('active', step === 'b');
+    document.getElementById('stepDotB').classList.toggle('done', step === 'results');
+    document.getElementById('stepDotResults').classList.toggle('active', step === 'results');
+  }
+
+  document.getElementById('continueBtnA').addEventListener('click', () => {
+    if (state.a.entityCol === null || state.a.metricCol === null) return;
+    setStep('b');
+  });
+  document.getElementById('backToABtn').addEventListener('click', () => setStep('a'));
+
+  document.getElementById('continueBtnB').addEventListener('click', async () => {
+    if (state.b.entityCol === null || state.b.metricCol === null) return;
+    setStep('results');
+    await runCompare();
+  });
+
+  document.getElementById('restartBtn').addEventListener('click', () => window.location.reload());
+
+  function compareRequestBody() {
+    return {
+      token_a: state.a.token,
+      header_row_index_a: state.a.headerRowIndex,
+      entity_column_a: state.a.entityCol,
+      metric_column_a: state.a.metricCol,
+      token_b: state.b.token,
+      header_row_index_b: state.b.headerRowIndex,
+      entity_column_b: state.b.entityCol,
+      metric_column_b: state.b.metricCol,
+    };
+  }
+
+  const STATUS_CLASS = {
+    'совпадает': 'status-match',
+    'расхождение': 'status-mismatch',
+    'только в A': 'status-only_a',
+    'только в B': 'status-only_b',
+  };
+
+  function fmtMoney(v) {
+    if (v === null || v === undefined) return '—';
+    return v;
+  }
+
+  async function runCompare() {
+    document.getElementById('comparingSpinner').classList.remove('hidden');
+    document.getElementById('resultsContent').classList.add('hidden');
+
+    let resp;
+    try {
+      resp = await fetch(`${API_BASE}/tools/compare`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(compareRequestBody()),
+      });
+    } catch (err) {
+      document.getElementById('comparingSpinner').textContent = 'Не удалось связаться с сервером: ' + err.message;
+      return;
+    }
+
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({}));
+      document.getElementById('comparingSpinner').textContent = body.detail || `Ошибка (${resp.status})`;
+      return;
+    }
+
+    const result = await resp.json();
+    document.getElementById('comparingSpinner').classList.add('hidden');
+    document.getElementById('resultsContent').classList.remove('hidden');
+
+    const summaryRow = document.getElementById('summaryRow');
+    summaryRow.innerHTML = '';
+    const pills = [
+      { label: 'Совпадает', value: result.summary.matched, cls: 'match' },
+      { label: 'Расхождение', value: result.summary.mismatched, cls: 'mismatch' },
+      { label: 'Только в A', value: result.summary.only_a, cls: '' },
+      { label: 'Только в B', value: result.summary.only_b, cls: '' },
+    ];
+    pills.forEach(p => {
+      const pill = document.createElement('div');
+      pill.className = `summary-pill ${p.cls}`;
+      const num = document.createElement('span');
+      num.className = 'num mono';
+      num.textContent = p.value;
+      pill.appendChild(num);
+      pill.appendChild(document.createTextNode(p.label));
+      summaryRow.appendChild(pill);
+    });
+
+    const table = document.getElementById('resultsTable');
+    table.innerHTML = '';
+    const thead = document.createElement('tr');
+    ['Сущность', 'Сумма A', 'Сумма B', 'Разница', 'Статус'].forEach(h => {
+      const th = document.createElement('th');
+      th.textContent = h;
+      thead.appendChild(th);
+    });
+    table.appendChild(thead);
+
+    result.rows.forEach(r => {
+      const tr = document.createElement('tr');
+      const tdEntity = document.createElement('td');
+      tdEntity.textContent = r.entity;
+      tr.appendChild(tdEntity);
+
+      [r.sum_a, r.sum_b, r.diff].forEach(v => {
+        const td = document.createElement('td');
+        td.className = 'num-cell mono';
+        td.textContent = fmtMoney(v);
+        tr.appendChild(td);
+      });
+
+      const tdStatus = document.createElement('td');
+      const badge = document.createElement('span');
+      badge.className = `status-badge ${STATUS_CLASS[r.status] || ''}`;
+      badge.textContent = r.status;
+      tdStatus.appendChild(badge);
+      tr.appendChild(tdStatus);
+
+      table.appendChild(tr);
+    });
+  }
+
+  document.getElementById('downloadBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('downloadBtn');
+    btn.disabled = true;
+    btn.textContent = 'Готовим файл…';
+
+    let resp;
+    try {
+      resp = await fetch(`${API_BASE}/tools/compare/export`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(compareRequestBody()),
+      });
+    } catch (err) {
+      alert('Не удалось связаться с сервером: ' + err.message);
+      btn.disabled = false;
+      btn.textContent = 'Скачать .xlsx';
+      return;
+    }
+
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({}));
+      alert(body.detail || `Ошибка (${resp.status})`);
+      btn.disabled = false;
+      btn.textContent = 'Скачать .xlsx';
+      return;
+    }
+
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'gruper_compare.xlsx';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+
+    btn.disabled = false;
+    btn.textContent = 'Скачать .xlsx';
+  });
+
+  setStep('a');
+</script>
+
+</body>
+</html>

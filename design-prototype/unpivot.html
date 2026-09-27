@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>gruper — развернуть сводную</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #FAFAF8;
+    --paper-raised: #F2F3EF;
+    --ink: #1A2233;
+    --ink-soft: #5B6472;
+    --stamp: #E8543D;
+    --stamp-dark: #CC4530;
+    --ledger-line: #16A76B;
+    --rule: #E2E4DE;
+    --rule-light: #EDEEE9;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: 'IBM Plex Sans', sans-serif;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono { font-family: 'IBM Plex Mono', monospace; }
+
+  header {
+    padding: 16px 32px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--rule);
+    background: #fff;
+  }
+  .logo { font-weight: 700; font-size: 18px; display: flex; align-items: center; gap: 8px; text-decoration: none; color: var(--ink); }
+  .logo-mark { width: 22px; height: 22px; border-radius: 7px; background: linear-gradient(135deg, var(--ledger-line), #0E8058); display: inline-block; }
+  .file-name { color: var(--ink-soft); font-size: 14px; }
+  .file-name::before { content: "/"; margin-right: 12px; color: var(--rule); }
+  .back-link { font-size: 13.5px; color: var(--ink-soft); text-decoration: none; }
+  .back-link:hover { color: var(--ink); }
+
+  .workspace { max-width: 1040px; margin: 0 auto; padding: 28px 32px 140px; }
+
+  .toolbar h1 { font-size: 22px; font-weight: 700; margin-bottom: 4px; }
+  .toolbar .hint { font-size: 14px; color: var(--ink-soft); margin-bottom: 24px; }
+
+  /* ---------- Legend / pick state ---------- */
+  .pick-row { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+  .pick-chip {
+    display: flex; align-items: flex-start; gap: 8px;
+    padding: 9px 14px;
+    border-radius: 10px;
+    border: 1.5px solid var(--rule);
+    background: #fff;
+    font-size: 13.5px;
+    max-width: 440px;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  .pick-chip .swatch { width: 11px; height: 11px; border-radius: 3px; flex-shrink: 0; margin-top: 4px; }
+  .pick-chip.id .swatch { background: var(--ledger-line); }
+  .pick-chip.value .swatch { background: var(--stamp); }
+  .pick-chip .label { font-weight: 600; }
+  .pick-chip .value-list { color: var(--ink-soft); }
+  .pick-chip.done.id { border-color: var(--ledger-line); background: rgba(22,167,107,0.06); }
+  .pick-chip.done.value { border-color: var(--stamp); background: rgba(232,84,61,0.06); }
+
+  /* ---------- Preview table ---------- */
+  .preview-card {
+    background: #fff;
+    border: 1px solid var(--rule);
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: 0 2px 8px rgba(26, 34, 51, 0.04);
+    margin-bottom: 20px;
+  }
+  .preview-scroll { overflow-x: auto; }
+  table.preview { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  table.preview td, table.preview th { padding: 10px 14px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--rule-light); }
+
+  .col-head {
+    cursor: pointer;
+    user-select: none;
+    border-bottom: 2px solid var(--rule);
+    background: var(--paper-raised);
+    transition: background 0.15s ease;
+  }
+  .col-head:hover .col-head-inner { background: var(--rule-light); }
+  .col-head-inner { display: flex; flex-direction: column; gap: 4px; padding: 2px 0; border-radius: 6px; }
+  .col-head .col-name { font-weight: 600; }
+  .col-head .col-role { font-size: 11px; color: var(--ink-soft); height: 14px; }
+  .col-head.picked-id { background: rgba(22,167,107,0.12); }
+  .col-head.picked-id .col-role { color: var(--ledger-line); font-weight: 600; }
+  .col-head.picked-value { background: rgba(232,84,61,0.12); }
+  .col-head.picked-value .col-role { color: var(--stamp-dark); font-weight: 600; }
+
+  td.picked-id { background: rgba(22,167,107,0.05); }
+  td.picked-value { background: rgba(232,84,61,0.05); }
+
+  tr.header-row-candidate { cursor: pointer; }
+  tr.header-row-candidate:hover td { background: var(--paper-raised); }
+  tr.header-row-candidate.is-decor td { color: var(--ink-soft); font-style: italic; }
+
+  .row-flag {
+    display: inline-block;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: #fff;
+    background: var(--ink);
+    padding: 2px 7px;
+    border-radius: 999px;
+    margin-right: 8px;
+  }
+
+  .table-hint { padding: 12px 14px; font-size: 12.5px; color: var(--ink-soft); border-top: 1px solid var(--rule-light); background: var(--paper-raised); }
+
+  /* ---------- Sticky continue bar ---------- */
+  .continue-bar {
+    position: fixed;
+    left: 50%;
+    bottom: 24px;
+    transform: translate(-50%, 0);
+    background: var(--ink);
+    color: #fff;
+    padding: 14px 16px 14px 20px;
+    border-radius: 14px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    box-shadow: 0 12px 32px rgba(0,0,0,0.25);
+  }
+  .continue-bar .status { font-size: 13px; }
+  .continue-bar .status .mono { color: rgba(255,255,255,0.6); }
+  .btn-continue {
+    background: var(--ledger-line);
+    border: none;
+    color: #fff;
+    padding: 10px 20px;
+    border-radius: 9px;
+    font-weight: 600;
+    font-size: 14px;
+    cursor: pointer;
+    font-family: inherit;
+    text-decoration: none;
+    display: inline-block;
+  }
+  .btn-continue.is-disabled { background: #4A5568; cursor: not-allowed; opacity: 0.6; pointer-events: none; }
+
+  /* ---------- Upload zone ---------- */
+  .upload-zone {
+    background: #fff;
+    border: 2px dashed var(--rule);
+    border-radius: 16px;
+    padding: 64px 32px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  .upload-zone:hover, .upload-zone.drag-over { border-color: var(--ledger-line); background: rgba(22,167,107,0.04); }
+  .upload-zone .upload-title { font-size: 17px; font-weight: 600; margin-bottom: 6px; }
+  .upload-zone .upload-hint { font-size: 13.5px; color: var(--ink-soft); }
+  .upload-zone .upload-error { margin-top: 14px; font-size: 13.5px; color: var(--stamp-dark); font-weight: 600; }
+  .hidden { display: none !important; }
+  .spinner-line { font-size: 13.5px; color: var(--ink-soft); padding: 24px; text-align: center; }
+</style>
+</head>
+<body>
+
+<header>
+  <a class="logo" href="index.html"><span class="logo-mark"></span>gruper</a>
+  <div style="display:flex; align-items:center; gap: 16px;">
+    <span class="file-name" id="fileNameLabel"></span>
+    <a class="back-link" href="dashboard.html">← Инструменты</a>
+  </div>
+</header>
+
+<div class="workspace">
+  <div class="toolbar">
+    <h1 id="pageTitle">Развернуть сводную (Unpivot)</h1>
+    <p class="hint" id="pageHint">Широкая таблица (товар × месяцы) → длинный список (товар, категория, значение). Загрузите файл — разовая обработка, ничего не сохраняется</p>
+  </div>
+
+  <div class="upload-zone" id="uploadZone">
+    <input type="file" id="fileInput" class="hidden" accept=".xlsx,.xls,.xlsm,.xlsb,.ods,.csv,.txt,.pdf">
+    <div id="uploadIdle">
+      <div class="upload-title">Перетащите файл сюда или нажмите, чтобы выбрать</div>
+      <div class="upload-hint">Excel, CSV или PDF — например, товары по строкам и месяцы по столбцам</div>
+    </div>
+    <div class="spinner-line hidden" id="uploadSpinner">Загружаем и разбираем файл…</div>
+    <div class="upload-error hidden" id="uploadError"></div>
+  </div>
+
+  <div class="hidden" id="pickWorkspace">
+    <div class="pick-row">
+      <div class="pick-chip id" id="chipId">
+        <span class="swatch"></span>
+        <span><span class="label">Оставить как есть:</span> <span class="value-list" id="chipIdValue">ничего не выбрано</span></span>
+      </div>
+      <div class="pick-chip value" id="chipValue">
+        <span class="swatch"></span>
+        <span><span class="label">Развернуть:</span> <span class="value-list" id="chipValueValue">ничего не выбрано</span></span>
+      </div>
+    </div>
+
+    <div class="preview-card">
+      <div class="preview-scroll">
+        <table class="preview" id="previewTable"></table>
+      </div>
+      <div class="table-hint" id="tableHint"></div>
+    </div>
+  </div>
+</div>
+
+<div class="continue-bar hidden" id="continueBar">
+  <span class="status" id="continueStatus">Отметьте минимум 1 колонку «как есть» и 2 «развернуть»</span>
+  <button class="btn-continue is-disabled" id="continueBtn">Скачать .xlsx</button>
+</div>
+
+<script>
+  const API_BASE = '/api';
+
+  let rawRows = [];
+  let totalRowCount = 0;
+  let token = null;
+
+  let headerRowIndex = 0;
+  // per-column role: null | 'id' | 'value'
+  let columnRoles = [];
+
+  function headerCells() { return rawRows[headerRowIndex] || []; }
+
+  // Same cheap heuristic as upload.html: a decorative title row fills far
+  // fewer cells than a real header row (one long string vs N short labels).
+  function guessHeaderRow(rows) {
+    if (rows.length < 2) return 0;
+    const filledCount = (row) => row.filter(c => c !== null && c !== undefined && String(c).trim() !== '').length;
+    const row0Filled = filledCount(rows[0]);
+    const row1Filled = filledCount(rows[1]);
+    const looksDecorative = row1Filled >= 2 && row0Filled <= row1Filled / 2;
+    return looksDecorative ? 1 : 0;
+  }
+
+  // ---------- Upload wiring ----------
+  const uploadZone = document.getElementById('uploadZone');
+  const fileInput = document.getElementById('fileInput');
+
+  uploadZone.addEventListener('click', () => fileInput.click());
+  uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('drag-over'); });
+  uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('drag-over'));
+  uploadZone.addEventListener('drop', e => {
+    e.preventDefault();
+    uploadZone.classList.remove('drag-over');
+    if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+  });
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files.length) handleFile(fileInput.files[0]);
+  });
+
+  function showUploadError(message) {
+    document.getElementById('uploadIdle').classList.remove('hidden');
+    document.getElementById('uploadSpinner').classList.add('hidden');
+    const errEl = document.getElementById('uploadError');
+    errEl.textContent = message;
+    errEl.classList.remove('hidden');
+  }
+
+  async function handleFile(file) {
+    document.getElementById('uploadError').classList.add('hidden');
+    document.getElementById('uploadIdle').classList.add('hidden');
+    document.getElementById('uploadSpinner').classList.remove('hidden');
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    let resp;
+    try {
+      resp = await fetch(`${API_BASE}/tools/preview`, { method: 'POST', body: formData });
+    } catch (err) {
+      showUploadError('Не удалось связаться с сервером: ' + err.message);
+      return;
+    }
+
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({}));
+      showUploadError(body.detail || `Ошибка загрузки (${resp.status})`);
+      return;
+    }
+
+    const body = await resp.json();
+    token = body.token;
+    rawRows = body.preview_rows;
+    totalRowCount = body.row_count;
+    headerRowIndex = guessHeaderRow(rawRows);
+    columnRoles = new Array((rawRows[0] || []).length).fill(null);
+
+    document.getElementById('fileNameLabel').textContent = body.filename || file.name;
+    document.getElementById('pageTitle').textContent = 'Какие колонки разворачивать?';
+    document.getElementById('pageHint').textContent = 'Кликните по строке, где начинаются заголовки, а затем по колонкам: раз — «как есть», два — «развернуть», три — сброс';
+
+    document.getElementById('uploadZone').classList.add('hidden');
+    document.getElementById('pickWorkspace').classList.remove('hidden');
+    document.getElementById('continueBar').classList.remove('hidden');
+
+    render();
+  }
+
+  // ---------- Preview / column picking ----------
+  function render() {
+    const table = document.getElementById('previewTable');
+    table.innerHTML = '';
+
+    const thead = document.createElement('tr');
+    headerCells().forEach((label, colIdx) => {
+      const th = document.createElement('th');
+      th.className = 'col-head';
+      const role = columnRoles[colIdx];
+      if (role === 'id') th.classList.add('picked-id');
+      if (role === 'value') th.classList.add('picked-value');
+      const inner = document.createElement('div');
+      inner.className = 'col-head-inner';
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'col-name';
+      nameSpan.textContent = (label === null || label === undefined || label === '') ? '—' : String(label);
+      const roleSpan = document.createElement('span');
+      roleSpan.className = 'col-role';
+      roleSpan.textContent = role === 'id' ? 'Как есть' : role === 'value' ? 'Развернуть' : '';
+      inner.appendChild(nameSpan);
+      inner.appendChild(roleSpan);
+      th.appendChild(inner);
+      th.addEventListener('click', () => cycleColumnRole(colIdx));
+      thead.appendChild(th);
+    });
+    table.appendChild(thead);
+
+    rawRows.forEach((row, rowIdx) => {
+      if (rowIdx === headerRowIndex) return;
+      const tr = document.createElement('tr');
+      tr.className = 'header-row-candidate';
+      const isDecor = rowIdx < headerRowIndex;
+      if (isDecor) tr.classList.add('is-decor');
+      tr.addEventListener('click', () => setHeaderRow(rowIdx));
+      row.forEach((cell, colIdx) => {
+        const td = document.createElement('td');
+        const role = columnRoles[colIdx];
+        if (role === 'id') td.classList.add('picked-id');
+        if (role === 'value') td.classList.add('picked-value');
+        const cellText = cell === null || cell === undefined ? '' : String(cell);
+        if (colIdx === 0 && isDecor) {
+          const flag = document.createElement('span');
+          flag.className = 'row-flag';
+          flag.textContent = 'не заголовок?';
+          td.appendChild(flag);
+          td.appendChild(document.createTextNode(cellText));
+        } else {
+          td.textContent = cellText;
+        }
+        tr.appendChild(td);
+      });
+      table.appendChild(tr);
+    });
+
+    const shownNote = totalRowCount > rawRows.length
+      ? `Показаны первые ${rawRows.length} строк файла — остальные ${totalRowCount - rawRows.length} разберутся так же, по этому образцу`
+      : `Показаны все ${rawRows.length} строк файла`;
+    document.getElementById('tableHint').textContent = shownNote;
+
+    updateChips();
+  }
+
+  function setHeaderRow(rowIdx) {
+    if (rowIdx === headerRowIndex) return;
+    headerRowIndex = rowIdx;
+    columnRoles = columnRoles.map(() => null);
+    render();
+  }
+
+  function cycleColumnRole(colIdx) {
+    const current = columnRoles[colIdx];
+    const next = current === null ? 'id' : current === 'id' ? 'value' : null;
+    columnRoles[colIdx] = next;
+    render();
+  }
+
+  function updateChips() {
+    const cells = headerCells();
+    const idIdx = columnRoles.map((r, i) => r === 'id' ? i : -1).filter(i => i >= 0);
+    const valueIdx = columnRoles.map((r, i) => r === 'value' ? i : -1).filter(i => i >= 0);
+
+    const chipId = document.getElementById('chipId');
+    const chipValue = document.getElementById('chipValue');
+    const chipIdValue = document.getElementById('chipIdValue');
+    const chipValueValue = document.getElementById('chipValueValue');
+
+    const nameOf = i => (cells[i] === null || cells[i] === undefined || cells[i] === '') ? `Колонка ${i + 1}` : String(cells[i]);
+
+    if (idIdx.length) {
+      chipIdValue.textContent = idIdx.map(nameOf).join(', ');
+      chipId.classList.add('done');
+    } else {
+      chipIdValue.textContent = 'ничего не выбрано';
+      chipId.classList.remove('done');
+    }
+
+    if (valueIdx.length) {
+      chipValueValue.textContent = valueIdx.map(nameOf).join(', ');
+      chipValue.classList.add('done');
+    } else {
+      chipValueValue.textContent = 'ничего не выбрано';
+      chipValue.classList.remove('done');
+    }
+
+    const status = document.getElementById('continueStatus');
+    const btn = document.getElementById('continueBtn');
+    if (idIdx.length >= 1 && valueIdx.length >= 2) {
+      status.innerHTML = `Строк на выходе: <span class="mono">${(totalRowCount - 1 - headerRowIndex) * valueIdx.length}</span>`;
+      btn.classList.remove('is-disabled');
+    } else {
+      status.textContent = 'Отметьте минимум 1 колонку «как есть» и 2 «развернуть»';
+      btn.classList.add('is-disabled');
+    }
+  }
+
+  // ---------- Commit: POST /api/tools/unpivot, download the result ----------
+  document.getElementById('continueBtn').addEventListener('click', async () => {
+    const idIdx = columnRoles.map((r, i) => r === 'id' ? i : -1).filter(i => i >= 0);
+    const valueIdx = columnRoles.map((r, i) => r === 'value' ? i : -1).filter(i => i >= 0);
+    if (idIdx.length < 1 || valueIdx.length < 2 || !token) return;
+
+    const btn = document.getElementById('continueBtn');
+    btn.classList.add('is-disabled');
+    btn.textContent = 'Готовим файл…';
+
+    let resp;
+    try {
+      resp = await fetch(`${API_BASE}/tools/unpivot`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token,
+          header_row_index: headerRowIndex,
+          id_columns: idIdx,
+          value_columns: valueIdx,
+        }),
+      });
+    } catch (err) {
+      alert('Не удалось связаться с сервером: ' + err.message);
+      btn.classList.remove('is-disabled');
+      btn.textContent = 'Скачать .xlsx';
+      return;
+    }
+
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({}));
+      alert(body.detail || `Ошибка (${resp.status})`);
+      btn.classList.remove('is-disabled');
+      btn.textContent = 'Скачать .xlsx';
+      return;
+    }
+
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'gruper_unpivot.xlsx';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+
+    btn.classList.remove('is-disabled');
+    btn.textContent = 'Скачать .xlsx';
+  });
+</script>
+
+</body>
+</html>
