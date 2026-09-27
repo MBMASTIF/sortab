@@ -15,3 +15,4 @@ openpyxl
 xlsxwriter
 pytest>=9.1
 fakeredis  # dev/test only
+httpx2  # dev/test only — fastapi.testclient.TestClient needs it on newer starlette (>=1.x); found missing on the live server, not in a local venv that predates that starlette bump

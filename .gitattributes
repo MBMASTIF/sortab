@@ -1,0 +1,13 @@
+# Force binary handling for real test-fixture files. Without this, git's
+# own text/binary heuristic (samples the first ~8000 bytes for a NUL byte)
+# misclassifies some of them as text — verified live: pdf_blank_page.pdf
+# (a genuinely empty PDF page, no embedded font/image data, so no NUL byte
+# anywhere near the start) triggered "LF will be replaced by CRLF" on `git
+# add`, which would silently corrupt the binary on any checkout with
+# core.autocrlf=true (the common default on Windows) — a real, not
+# hypothetical, way to break a camelot-parsed PDF fixture after a fresh
+# clone. `-text` disables line-ending conversion and diffing outright.
+*.pdf -text
+*.xlsx -text
+*.xls -text
+*.ods -text

@@ -55,7 +55,7 @@ def test_pdf_multipage_table_glues_pages_and_drops_repeated_headers():
     assert total == Decimal("79390.55")
 
 
-def test_pdf_unsupported_when_no_table_found(tmp_path):
+def test_pdf_unsupported_when_no_table_found():
     """A genuinely blank PDF page — no text at all — is the one case
     camelot itself reports zero Table objects for (verified live: a page
     with SOME text but no tabular structure still comes back as a
@@ -63,16 +63,12 @@ def test_pdf_unsupported_when_no_table_found(tmp_path):
     trigger this path — an empty page is). Must raise the same
     UnsupportedFileError as any other file parse_file_raw() can't make
     sense of, not crash with an internal IndexError from empty-list
-    handling."""
-    from reportlab.pdfgen import canvas
-
-    path = tmp_path / "blank.pdf"
-    c = canvas.Canvas(str(path))
-    c.showPage()  # a page with literally nothing drawn on it
-    c.save()
-
+    handling. Uses the committed pdf_blank_page.pdf fixture rather than
+    generating one inline, so this test doesn't need reportlab installed
+    wherever pytest runs (e.g. the production server deliberately doesn't
+    have it — see generate_fixtures.py)."""
     with pytest.raises(UnsupportedFileError):
-        parse_file_raw(path)
+        parse_file_raw(FIXTURES_DIR / "pdf_blank_page.pdf")
 
 
 def test_pdf_malformed_bytes_raise_unsupported_not_a_raw_pdf_exception(tmp_path):

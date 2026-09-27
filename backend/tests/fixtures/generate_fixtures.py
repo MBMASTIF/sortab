@@ -43,6 +43,10 @@ real thing that happens with real Russian marketplace/1C exports:
   behavior (and pdfplumber's default entirely) finds 0 rows on this exact
   shape — flavor="stream" (text-position based) is the one that works.
 
+- pdf_blank_page.pdf: a single page with nothing drawn on it at all —
+  the one shape that makes camelot report zero tables found (see
+  core.parsing._read_pdf_raw()'s zero-tables -> UnsupportedFileError path).
+
 - pdf_multipage_table.pdf: one logical table split across 3 pages with the
   header row repeated verbatim on every page — the realistic shape for any
   multi-page PDF export (camelot returns one Table per page). Exercises
@@ -206,6 +210,24 @@ def make_pdf_invoice_no_borders() -> None:
     print(f"wrote pdf_invoice_no_borders.pdf ({len(rows) - 1} data row, no borders)")
 
 
+def make_pdf_blank_page() -> None:
+    """A single page with literally nothing drawn on it. Exists purely to
+    exercise the "camelot finds zero tables at all" path in
+    core.parsing._read_pdf_raw() (verified live: a page with SOME text
+    but no tabular structure still comes back from camelot as a
+    degenerate 1x1 "table" containing that text — only a truly empty page
+    triggers the zero-tables case). Kept as a committed static fixture,
+    not generated inline inside the test, so the test suite doesn't need
+    reportlab as a runtime/test dependency wherever it's run (e.g. the
+    production server's venv intentionally doesn't have it — it's a
+    fixture-authoring tool, not part of the app)."""
+    path = FIXTURES_DIR / "pdf_blank_page.pdf"
+    c = canvas.Canvas(str(path), pagesize=A4)
+    c.showPage()
+    c.save()
+    print("wrote pdf_blank_page.pdf (1 page, no content)")
+
+
 def make_pdf_multipage_table() -> None:
     """One logical table split across 3 pages, header row repeated
     verbatim on every page — the realistic pattern for a multi-page PDF
@@ -266,4 +288,5 @@ if __name__ == "__main__":
     make_similar_names_case_whitespace()
     make_large_fractional_sums()
     make_pdf_invoice_no_borders()
+    make_pdf_blank_page()
     make_pdf_multipage_table()
