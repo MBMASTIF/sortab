@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>gruper — водяные знаки</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #FAFAF8;
+    --paper-raised: #F2F3EF;
+    --ink: #1A2233;
+    --ink-soft: #5B6472;
+    --stamp: #E8543D;
+    --stamp-dark: #CC4530;
+    --ledger-line: #16A76B;
+    --rule: #E2E4DE;
+    --rule-light: #EDEEE9;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: 'IBM Plex Sans', sans-serif;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono { font-family: 'IBM Plex Mono', monospace; }
+
+  header {
+    padding: 16px 32px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--rule);
+    background: #fff;
+  }
+  .logo { font-weight: 700; font-size: 18px; display: flex; align-items: center; gap: 8px; text-decoration: none; color: var(--ink); }
+  .logo-mark { width: 22px; height: 22px; border-radius: 7px; background: linear-gradient(135deg, var(--ledger-line), #0E8058); display: inline-block; }
+  .back-link { font-size: 13.5px; color: var(--ink-soft); text-decoration: none; }
+  .back-link:hover { color: var(--ink); }
+
+  .workspace { max-width: 640px; margin: 0 auto; padding: 40px 32px 80px; }
+
+  .toolbar h1 { font-size: 22px; font-weight: 700; margin-bottom: 4px; }
+  .toolbar .hint { font-size: 14px; color: var(--ink-soft); margin-bottom: 24px; }
+
+  .hidden { display: none !important; }
+
+  /* ---------- Upload zone ---------- */
+  .upload-zone {
+    background: #fff;
+    border: 2px dashed var(--rule);
+    border-radius: 16px;
+    padding: 56px 32px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  .upload-zone:hover, .upload-zone.drag-over { border-color: var(--ledger-line); background: rgba(22,167,107,0.04); }
+  .upload-zone .upload-title { font-size: 17px; font-weight: 600; margin-bottom: 6px; }
+  .upload-zone .upload-hint { font-size: 13.5px; color: var(--ink-soft); }
+  .upload-error { margin-top: 14px; font-size: 13.5px; color: var(--stamp-dark); font-weight: 600; }
+
+  /* ---------- File-selected card ---------- */
+  .file-card {
+    background: #fff;
+    border: 1px solid var(--rule);
+    border-radius: 16px;
+    padding: 20px 22px;
+    box-shadow: 0 2px 8px rgba(26, 34, 51, 0.04);
+  }
+  .file-row { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; padding-bottom: 18px; border-bottom: 1px solid var(--rule-light); }
+  .file-icon {
+    width: 36px; height: 36px; border-radius: 9px;
+    background: rgba(232,84,61,0.1); color: var(--stamp-dark);
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 11px; flex-shrink: 0;
+  }
+  .file-meta .name { font-weight: 600; font-size: 14px; }
+  .file-meta .size { font-size: 12.5px; color: var(--ink-soft); }
+  .change-file { margin-left: auto; font-size: 13px; color: var(--ledger-line); background: none; border: none; cursor: pointer; font-family: inherit; font-weight: 600; }
+
+  label.field-label { display: block; font-size: 13.5px; font-weight: 600; margin-bottom: 8px; }
+  input#watermarkInput {
+    width: 100%;
+    padding: 12px 14px;
+    border: 1.5px solid var(--rule);
+    border-radius: 10px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 14px;
+    color: var(--ink);
+  }
+  input#watermarkInput:focus { outline: none; border-color: var(--ledger-line); }
+  .field-hint { font-size: 12.5px; color: var(--ink-soft); margin-top: 8px; }
+
+  .quick-fill { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .quick-fill button {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    background: var(--paper-raised);
+    border: 1px solid var(--rule);
+    color: var(--ink-soft);
+    padding: 5px 10px;
+    border-radius: 999px;
+    cursor: pointer;
+  }
+  .quick-fill button:hover { border-color: var(--ledger-line); color: var(--ledger-line); }
+
+  .watermark-preview {
+    margin-top: 18px;
+    position: relative;
+    height: 90px;
+    background: #fff;
+    border: 1px solid var(--rule-light);
+    border-radius: 10px;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .watermark-preview .stamp-text {
+    font-size: 22px;
+    font-weight: 700;
+    color: rgba(91, 100, 114, 0.35);
+    transform: rotate(-30deg);
+    white-space: nowrap;
+  }
+
+  .btn-submit {
+    width: 100%;
+    margin-top: 20px;
+    background: var(--ledger-line);
+    border: none;
+    color: #fff;
+    padding: 13px 20px;
+    border-radius: 10px;
+    font-weight: 600;
+    font-size: 14.5px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .btn-submit.is-disabled { background: #B9BEC5; cursor: not-allowed; }
+  .submit-error { margin-top: 12px; font-size: 13px; color: var(--stamp-dark); font-weight: 600; }
+  .submit-success { margin-top: 12px; font-size: 13px; color: var(--ledger-line); font-weight: 600; }
+</style>
+</head>
+<body>
+
+<header>
+  <a class="logo" href="index.html"><span class="logo-mark"></span>gruper</a>
+  <a class="back-link" href="dashboard.html">← Инструменты</a>
+</header>
+
+<div class="workspace">
+  <div class="toolbar">
+    <h1>Водяные знаки</h1>
+    <p class="hint">Полупрозрачный диагональный текст на каждую страницу PDF — например, при скачивании прайс-листа сотрудником</p>
+  </div>
+
+  <div class="upload-zone" id="uploadZone">
+    <input type="file" id="fileInput" class="hidden" accept=".pdf">
+    <div class="upload-title">Перетащите PDF сюда или нажмите, чтобы выбрать</div>
+    <div class="upload-hint">Только .pdf, разовая обработка — ничего не сохраняется</div>
+    <div class="upload-error hidden" id="uploadError"></div>
+  </div>
+
+  <div class="file-card hidden" id="fileCard">
+    <div class="file-row">
+      <span class="file-icon">PDF</span>
+      <div class="file-meta">
+        <div class="name" id="fileName"></div>
+        <div class="size" id="fileSize"></div>
+      </div>
+      <button class="change-file" id="changeFileBtn">Сменить файл</button>
+    </div>
+
+    <label class="field-label" for="watermarkInput">Текст водяного знака</label>
+    <input type="text" id="watermarkInput" placeholder="например: ЧЕРНОВИК">
+    <div class="quick-fill">
+      <button type="button" data-value="ЧЕРНОВИК">ЧЕРНОВИК</button>
+      <button type="button" data-value="КОПИЯ">КОПИЯ</button>
+      <button type="button" data-value="КОНФИДЕНЦИАЛЬНО">КОНФИДЕНЦИАЛЬНО</button>
+    </div>
+    <div class="watermark-preview">
+      <span class="stamp-text" id="stampPreview">ЧЕРНОВИК</span>
+    </div>
+
+    <button class="btn-submit is-disabled" id="submitBtn">Наложить и скачать .pdf</button>
+    <div class="submit-error hidden" id="submitError"></div>
+    <div class="submit-success hidden" id="submitSuccess"></div>
+  </div>
+</div>
+
+<script>
+  const API_BASE = '/api';
+  let selectedFile = null;
+
+  const uploadZone = document.getElementById('uploadZone');
+  const fileInput = document.getElementById('fileInput');
+  const fileCard = document.getElementById('fileCard');
+  const watermarkInput = document.getElementById('watermarkInput');
+  const submitBtn = document.getElementById('submitBtn');
+  const stampPreview = document.getElementById('stampPreview');
+
+  uploadZone.addEventListener('click', () => fileInput.click());
+  uploadZone.addEventListener('dragover', e => { e.preventDefault(); uploadZone.classList.add('drag-over'); });
+  uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('drag-over'));
+  uploadZone.addEventListener('drop', e => {
+    e.preventDefault();
+    uploadZone.classList.remove('drag-over');
+    if (e.dataTransfer.files.length) selectFile(e.dataTransfer.files[0]);
+  });
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files.length) selectFile(fileInput.files[0]);
+  });
+
+  function formatSize(bytes) {
+    if (bytes < 1024) return `${bytes} Б`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} КБ`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`;
+  }
+
+  function selectFile(file) {
+    document.getElementById('uploadError').classList.add('hidden');
+    if (!file.name.toLowerCase().endsWith('.pdf')) {
+      const err = document.getElementById('uploadError');
+      err.textContent = 'Нужен файл в формате .pdf';
+      err.classList.remove('hidden');
+      return;
+    }
+    selectedFile = file;
+    document.getElementById('fileName').textContent = file.name;
+    document.getElementById('fileSize').textContent = formatSize(file.size);
+    uploadZone.classList.add('hidden');
+    fileCard.classList.remove('hidden');
+    document.getElementById('submitError').classList.add('hidden');
+    document.getElementById('submitSuccess').classList.add('hidden');
+    watermarkInput.focus();
+    updateSubmitState();
+  }
+
+  document.getElementById('changeFileBtn').addEventListener('click', () => {
+    selectedFile = null;
+    fileInput.value = '';
+    fileCard.classList.add('hidden');
+    uploadZone.classList.remove('hidden');
+    updateSubmitState();
+  });
+
+  document.querySelectorAll('.quick-fill button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      watermarkInput.value = btn.dataset.value;
+      updateSubmitState();
+      watermarkInput.focus();
+    });
+  });
+
+  function updateSubmitState() {
+    const text = watermarkInput.value.trim();
+    stampPreview.textContent = text || 'ЧЕРНОВИК';
+    submitBtn.classList.toggle('is-disabled', !(selectedFile && text.length > 0));
+  }
+  watermarkInput.addEventListener('input', updateSubmitState);
+
+  submitBtn.addEventListener('click', async () => {
+    if (!selectedFile || !watermarkInput.value.trim()) return;
+
+    const errEl = document.getElementById('submitError');
+    const successEl = document.getElementById('submitSuccess');
+    errEl.classList.add('hidden');
+    successEl.classList.add('hidden');
+    submitBtn.classList.add('is-disabled');
+    submitBtn.textContent = 'Накладываем…';
+
+    const formData = new FormData();
+    formData.append('file', selectedFile);
+    formData.append('text', watermarkInput.value.trim());
+
+    let resp;
+    try {
+      resp = await fetch(`${API_BASE}/tools/watermark`, { method: 'POST', body: formData });
+    } catch (err) {
+      errEl.textContent = 'Не удалось связаться с сервером: ' + err.message;
+      errEl.classList.remove('hidden');
+      submitBtn.classList.remove('is-disabled');
+      submitBtn.textContent = 'Наложить и скачать .pdf';
+      return;
+    }
+
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({}));
+      errEl.textContent = body.detail || `Ошибка (${resp.status})`;
+      errEl.classList.remove('hidden');
+      submitBtn.classList.remove('is-disabled');
+      submitBtn.textContent = 'Наложить и скачать .pdf';
+      return;
+    }
+
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'gruper_watermark.pdf';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+
+    successEl.textContent = 'Готово — файл скачан';
+    successEl.classList.remove('hidden');
+    submitBtn.classList.remove('is-disabled');
+    submitBtn.textContent = 'Наложить и скачать .pdf';
+  });
+</script>
+
+</body>
+</html>
