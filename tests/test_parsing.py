@@ -6,7 +6,7 @@ identified as the real risk for our target audience."""
 import polars as pl
 import pytest
 
-from core.parsing import UnsupportedFileError, normalize_decimal_comma, parse_file
+from core.parsing import UnsupportedFileError, normalize_decimal_comma, parse_file, parse_file_raw
 
 
 @pytest.fixture
@@ -64,3 +64,47 @@ def test_xlsx_round_trip(tmp_path):
     assert result.detected_encoding is None  # not applicable to Excel
     assert result.df["Товар"].to_list() == ["Носки", "Шапка"]
     assert result.df["Сумма"].to_list() == [100.5, 250.0]
+
+
+def test_xlsx_raw_exposes_decorative_row_before_real_header(tmp_path):
+    """The real-world case parse_file() can't handle: a decorative report
+    title sits above the actual header row. parse_file_raw() must hand
+    back every row untouched (including that decorative one) so the
+    upload screen can let the user click the real header."""
+    path = tmp_path / "report_with_title.xlsx"
+    # write_excel() itself writes the DataFrame's own column names ("a",
+    # "b") as row 0 of the actual sheet — a real quirk of how Polars writes
+    # xlsx, not something this test introduces. So the real on-disk sheet
+    # is: row 0 = "a"/"b" header, row 1 = decorative title, row 2 = the
+    # real header, rows 3+ = data. parse_file_raw() must return all of it
+    # untouched, proving nothing gets silently dropped or assumed.
+    raw = pl.DataFrame(
+        {
+            "a": ["Отчёт за сентябрь 2026", "Товар", "Носки", "Шапка"],
+            "b": [None, "Сумма", "100", "250"],
+        }
+    )
+    raw.write_excel(path)
+
+    result = parse_file_raw(path)
+    assert result.df.height == 5  # nothing dropped, including the header-looking first row
+    rows = result.df.rows()
+    assert rows[0] == ("a", "b")
+    assert rows[1][0] == "Отчёт за сентябрь 2026"
+    assert rows[2] == ("Товар", "Сумма")
+    assert rows[3] == ("Носки", "100")
+    assert rows[4] == ("Шапка", "250")
+
+
+def test_csv_raw_exposes_every_row_with_generic_column_names(cp1251_semicolon_csv):
+    result = parse_file_raw(cp1251_semicolon_csv)
+    assert result.detected_delimiter == ";"
+    assert result.df.height == 3  # header row + 2 data rows, nothing consumed as a header
+    rows = result.df.rows()
+    assert rows[0] == ("Товар", "Сумма")
+    assert rows[1] == ("Носки", "1 234,56")
+
+
+def test_raw_unsupported_extension_raises():
+    with pytest.raises(UnsupportedFileError):
+        parse_file_raw("report.pdf")

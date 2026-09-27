@@ -98,6 +98,48 @@ def parse_file(path: str | Path) -> ParsedFile:
     raise UnsupportedFileError(f"Unsupported file extension: {suffix!r}")
 
 
+def parse_file_raw(path: str | Path) -> ParsedFile:
+    """Reads a file with NO assumption about where the header row is —
+    every row, including whatever would normally become the column header,
+    comes back as plain data with generic column names ("column_1",
+    "column_2", ...).
+
+    Why this exists as a separate function rather than a flag inside
+    parse_file(): a real 1C/WB export frequently has a decorative title
+    row ("Отчёт за сентябрь 2026") above the real header, and the
+    upload screen needs to show the user the raw grid so they can click
+    the row that's actually the header. parse_file() must keep assuming
+    row 0 is the header (existing tests + the "no decision needed" fast
+    path both depend on that), so this is an additive sibling, not a
+    behavior change to the tested function.
+
+    Once the user confirms the real header row index (via the API's
+    /columns step), the caller slices this raw DataFrame at that index
+    and promotes that row's cell values to real column names — see
+    backend/main.py.
+    """
+    path = Path(path)
+    suffix = path.suffix.lower()
+
+    if suffix in EXCEL_SUFFIXES:
+        df = pl.read_excel(path, has_header=False, drop_empty_rows=False, drop_empty_cols=False)
+        return ParsedFile(df=df, detected_encoding=None, detected_delimiter=None)
+
+    if suffix in CSV_SUFFIXES:
+        raw = path.read_bytes()
+        encoding, delimiter = _detect_csv_dialect(raw)
+        df = pl.read_csv(
+            path,
+            encoding=encoding,
+            separator=delimiter,
+            has_header=False,
+            infer_schema_length=0,
+        )
+        return ParsedFile(df=df, detected_encoding=encoding, detected_delimiter=delimiter)
+
+    raise UnsupportedFileError(f"Unsupported file extension: {suffix!r}")
+
+
 def normalize_decimal_comma(df: pl.DataFrame, column: str) -> pl.Series:
     """Converts a Russian-formatted numeric text column ("1 234,56") into
     a proper float column. Kept as a separate explicit step (not silently
