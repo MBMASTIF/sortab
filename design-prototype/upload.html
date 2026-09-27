@@ -228,6 +228,23 @@
 
   function headerCells() { return rawRows[headerRowIndex] || []; }
 
+  // Real files most often have a clean header in row 0 — the "decorative
+  // title row before the real header" (1C/WB report titles) is common
+  // enough to design the picker around, but it's not the default case, so
+  // guessing "always row 1" was wrong more often than not. The one cheap,
+  // measurable signal available from a raw preview (no merged-cell info)
+  // is cell density: a decorative title row fills far fewer cells than an
+  // real header row does, because it's one long string spanning the row
+  // rather than N separate short labels.
+  function guessHeaderRow(rows) {
+    if (rows.length < 2) return 0;
+    const filledCount = (row) => row.filter(c => c !== null && c !== undefined && String(c).trim() !== '').length;
+    const row0Filled = filledCount(rows[0]);
+    const row1Filled = filledCount(rows[1]);
+    const looksDecorative = row1Filled >= 2 && row0Filled <= row1Filled / 2;
+    return looksDecorative ? 1 : 0;
+  }
+
   // ---------- Upload wiring ----------
   const uploadZone = document.getElementById('uploadZone');
   const fileInput = document.getElementById('fileInput');
@@ -279,7 +296,7 @@
     sessionId = body.session_id;
     rawRows = body.preview_rows;
     totalRowCount = body.row_count;
-    headerRowIndex = rawRows.length > 1 ? 1 : 0; // decorative-row-above-header is the common case
+    headerRowIndex = guessHeaderRow(rawRows);
     entityCol = null;
     metricCol = null;
 
