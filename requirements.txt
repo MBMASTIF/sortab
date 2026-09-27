@@ -5,6 +5,8 @@ charset-normalizer>=3.4
 pdfplumber>=0.11
 camelot-py[base]>=2.0
 fastapi
+python-multipart  # required by FastAPI/Starlette to parse multipart file uploads (POST /api/upload)
+uvicorn  # ASGI server to actually run the FastAPI app outside of tests
 redis
 rq
 openpyxl
