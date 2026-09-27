@@ -63,6 +63,14 @@ def get_engine() -> sa.engine.Engine:
     Redis vs fakeredis."""
     global _engine
     if _engine is None:
+        # DATABASE_URL must spell the driver explicitly as
+        # "postgresql+psycopg2://..." in production — verified live on
+        # the server (2026-09-27): SQLAlchemy 2.1's default postgresql
+        # dialect resolution tried to import `psycopg` (v3, not
+        # installed) when the URL just said "postgresql://", even though
+        # psycopg2-binary was the driver actually installed. A bare
+        # "postgresql://" is a silent 500 waiting to happen, not a safe
+        # default.
         url = os.environ.get("DATABASE_URL", "sqlite:///./gruper_dev.db")
         _engine = sa.create_engine(url, future=True)
         metadata.create_all(_engine)
