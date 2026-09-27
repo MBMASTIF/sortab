@@ -9,23 +9,24 @@ ToolFileStore per test (no shared state leaking between tests, same
 from decimal import Decimal
 from io import BytesIO
 
+import fakeredis
 import openpyxl
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.main import app, get_tools_store
-from backend.tools_store import ToolFileStore
+from backend.main import app, get_redis
 
 
 @pytest.fixture
 def client():
-    # One shared instance for the whole test — get_tools_store is called
-    # once per request, so a lambda that builds a NEW ToolFileStore() every
-    # call would silently lose every token between the preview request and
-    # the commit request (caught by running this suite for real, not
-    # assumed).
-    store = ToolFileStore()
-    app.dependency_overrides[get_tools_store] = lambda: store
+    # tools_store.ToolFileStore is now Redis-backed (see its module
+    # docstring for why: the live deploy runs multiple uvicorn workers, so
+    # an in-process dict silently lost tokens across workers). Overriding
+    # get_redis alone is enough — get_tools_store() in main.py builds its
+    # ToolFileStore from this same connection, same pattern test_api.py
+    # already uses for the Project pipeline's Redis-backed sessions.
+    fake_redis = fakeredis.FakeStrictRedis()
+    app.dependency_overrides[get_redis] = lambda: fake_redis
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.clear()

@@ -1,99 +1,76 @@
-"""Ephemeral, in-process storage for the raw parsed DataFrame behind the
-two "Инструменты" (Unpivot, Compare) preview->commit flows.
+"""Ephemeral storage for the raw parsed DataFrame behind the two
+"Инструменты" (Unpivot, Compare) preview->commit flows.
 
-Architecture decision (see task brief — "реши сам, задокументируй выбор"):
-these tools are explicitly NOT part of the Project pipeline (README
-"Архитектура интерфейса" — Инструменты are one-off, stateless, anonymous,
-nothing saved). backend/session_store.py's Redis-backed Session exists to
-survive the *multi-step, potentially long-lived* group-tree-building
-workflow (upload -> columns -> assign many times -> export, over minutes
-or longer, possibly resumed after a reload). Neither Инструмент needs that:
-Unpivot is upload -> pick columns -> download in one short sitting, and
-Compare is upload A -> upload B -> compare -> download, also one sitting.
-Putting the parsed table in a Redis "session" would mean either quietly
-building session-shaped state for something the task brief and README both
-say is explicitly not a session, or plumbing a whole second
-finalized/header_row_index envelope through Redis for no behavioral gain.
+Course correction, measured not guessed: the first version of this module
+was a plain in-process dict, reasoned as "these tools aren't a Project
+session, so they don't need Redis" (see README "Архитектура интерфейса" —
+Инструменты are one-off/anonymous/stateless, unlike backend/session_store's
+Project-pipeline Session). That reasoning about the *data shape* was right,
+but it implicitly assumed a single backend process. Checking the actual
+deployed systemd unit (`systemctl cat gruper-backend`) before shipping
+this showed `ExecStart=... uvicorn backend.main:app ... --workers 2` — two
+independent OS processes behind the same port, with the OS load-balancing
+connections between them. A token minted by worker 1's in-process dict is
+simply invisible to worker 2 — the preview and commit requests for the
+same tool run have no guarantee of landing on the same worker, so an
+in-process store would 404 unpredictably, roughly half the time. That's
+not an edge case to document and accept; it would make the feature flaky
+in production. So this now stores the raw table's bytes in Redis instead,
+reusing the exact same Redis connection (and the same `get_redis`
+dependency/fakeredis-override pattern) session_store.py already established
+for the identical reason.
 
-So: a plain in-memory dict, keyed by a one-time uuid4 token, holding the
-already-parsed Polars DataFrame directly (no serialization cost, unlike
-session_store's Arrow-IPC round trip — it never needs to leave this
-process). TTL is short (see TOKEN_TTL_SECONDS) — long enough to comfortably
-cover "upload, look at the preview, pick columns, submit" without feeling
-rushed, short enough that an abandoned upload doesn't sit in memory.
-
-Known, accepted limitation (documented, not discovered later): this only
-works within a single process. If backend/main.py is ever run with
-multiple uvicorn/gunicorn workers, a token minted by worker A is invisible
-to worker B. Today's deploy (see project CLAUDE.md-equivalent instructions)
-runs one `uvicorn` process under systemd, so this is fine as built; if the
-service is ever scaled to multiple workers, this store — and only this
-store, nothing else in the tools pipeline — would need to move to Redis
-with a short TTL, mirroring session_store's pattern.
+This is still NOT a "session" in the Project-pipeline sense — no
+TreeStore, no finalized flag, no header_row_index envelope, just
+`token -> Arrow IPC bytes` with a short TTL, exactly the same shape the
+in-process version had, only relocated to somewhere every worker can see
+it. That's the whole fix.
 """
 
 from __future__ import annotations
 
-import threading
-import time
 import uuid
-from dataclasses import dataclass
+from io import BytesIO
 
 import polars as pl
+from redis import Redis
 
 TOKEN_TTL_SECONDS = 15 * 60
+TOOL_TOKEN_KEY_PREFIX = "gruper:tool-token:"
 
 
 class ToolTokenNotFoundError(Exception):
-    """token doesn't exist (never minted, already expired, or the process
-    restarted). The API layer maps this to an HTTP 404."""
+    """token doesn't exist (never minted, already expired, or minted
+    against a different Redis than the one now being read). The API layer
+    maps this to an HTTP 404."""
 
 
-@dataclass
-class _Entry:
-    df: pl.DataFrame
-    expires_at: float
+def _redis_key(token: str) -> str:
+    return f"{TOOL_TOKEN_KEY_PREFIX}{token}"
 
 
 class ToolFileStore:
-    """Not a module-level global by accident of naming — an actual class,
-    so tests can construct an isolated instance instead of mutating shared
-    process state (see backend/tests/test_tools_store.py)."""
+    """Thin wrapper around a Redis connection — a class (not bare module
+    functions) so tests can hand it an isolated fakeredis client instead of
+    mutating shared state (see backend/tests/test_tools_api.py, which
+    overrides the underlying get_redis dependency exactly like
+    test_api.py already does for the Project pipeline)."""
 
-    def __init__(self, ttl_seconds: float = TOKEN_TTL_SECONDS) -> None:
+    def __init__(self, redis_conn: Redis, ttl_seconds: int = TOKEN_TTL_SECONDS) -> None:
+        self._redis = redis_conn
         self._ttl_seconds = ttl_seconds
-        self._entries: dict[str, _Entry] = {}
-        self._lock = threading.Lock()
 
     def put(self, df: pl.DataFrame) -> str:
         token = str(uuid.uuid4())
-        with self._lock:
-            self._purge_expired_locked()
-            self._entries[token] = _Entry(df=df, expires_at=time.monotonic() + self._ttl_seconds)
+        buffer = BytesIO()
+        df.write_ipc(buffer)
+        self._redis.set(_redis_key(token), buffer.getvalue(), ex=self._ttl_seconds)
         return token
 
     def get(self, token: str) -> pl.DataFrame:
-        with self._lock:
-            self._purge_expired_locked()
-            entry = self._entries.get(token)
-            if entry is None:
-                raise ToolTokenNotFoundError(
-                    f"Token {token!r} not found or expired — please re-upload the file"
-                )
-            return entry.df
-
-    def _purge_expired_locked(self) -> None:
-        now = time.monotonic()
-        expired = [key for key, entry in self._entries.items() if entry.expires_at < now]
-        for key in expired:
-            del self._entries[key]
-
-
-_default_store = ToolFileStore()
-
-
-def get_tool_store() -> ToolFileStore:
-    """FastAPI dependency accessor — mirrors backend/session_store.py's
-    get_redis_client() shape so main.py's endpoints read the same way as
-    every other dependency in this file."""
-    return _default_store
+        raw = self._redis.get(_redis_key(token))
+        if raw is None:
+            raise ToolTokenNotFoundError(
+                f"Token {token!r} not found or expired — please re-upload the file"
+            )
+        return pl.read_ipc(BytesIO(raw))

@@ -51,7 +51,7 @@ from backend.session_store import (
     load_session,
     save_session,
 )
-from backend.tools_store import ToolFileStore, ToolTokenNotFoundError, get_tool_store
+from backend.tools_store import ToolFileStore, ToolTokenNotFoundError
 from core.compare import compare_entities
 from core.export import build_detail_sheet, build_summary_sheet, export_single_sheet, export_workbook
 from core.parsing import UnsupportedFileError, parse_file_raw
@@ -76,12 +76,15 @@ def get_db() -> Engine:
     return get_engine()
 
 
-def get_tools_store() -> ToolFileStore:
+def get_tools_store(redis_conn: Redis = Depends(get_redis)) -> ToolFileStore:
     """FastAPI dependency for the Инструменты preview->commit token store
-    (backend/tools_store.py) — deliberately NOT Redis, see that module's
-    docstring. Overridden in tests with a fresh ToolFileStore() instance so
-    tests never share state with each other or a running server."""
-    return get_tool_store()
+    (backend/tools_store.py) — built on the same Redis connection/override
+    as get_redis() above, not a separate store, precisely so it works
+    correctly across the deployed service's multiple uvicorn workers (see
+    tools_store.py's docstring for why an earlier in-process version was
+    wrong). Tests get this for free by overriding get_redis with
+    fakeredis, same as every other Redis-backed endpoint in this file."""
+    return ToolFileStore(redis_conn)
 
 
 def require_user(request: Request, redis_conn: Redis = Depends(get_redis)) -> str:
@@ -470,10 +473,12 @@ def load_project_into_session(
 # ---------------------------------------------------------------------
 # Инструменты (Unpivot, Compare) — see README "Архитектура интерфейса":
 # one-off, stateless, anonymous utilities, deliberately NOT part of the
-# Project pipeline above. No Redis session, no auth, nothing persisted —
-# see backend/tools_store.py's docstring for why an in-process token store
-# is the right amount of state here (just enough to survive the short
-# upload -> pick columns -> download sitting) and not a Redis session.
+# Project pipeline above: no auth, nothing persisted, no group tree, no
+# finalized/header_row_index envelope. The parsed table between preview and
+# commit lives in Redis with a short TTL only (see backend/tools_store.py)
+# — reusing the same connection as session_store.py because the deploy runs
+# multiple uvicorn workers, NOT because this is a "session" in that
+# module's sense.
 # ---------------------------------------------------------------------
 
 
@@ -482,8 +487,8 @@ async def tools_preview(file: UploadFile = File(...), store: ToolFileStore = Dep
     """Shared first step for both Инструменты: parse the upload header-
     agnostically (exact same core.parsing.parse_file_raw() the main
     pipeline's /api/upload uses) and hand back a preview grid plus a
-    short-lived token identifying the parsed table in memory. No
-    session_id, no Redis — see backend/tools_store.py."""
+    short-lived token identifying the parsed table (see
+    backend/tools_store.py — Redis-backed, short TTL, no session_id)."""
     suffix = Path(file.filename or "").suffix.lower()
     contents = await file.read()
 
