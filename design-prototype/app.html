@@ -163,6 +163,35 @@
   .icon-btn:hover { background: var(--rule-light); color: var(--ink); }
   .tree-children { margin-left: 22px; border-left: 1px solid var(--rule); padding-left: 4px; }
 
+  .btn-export {
+    background: var(--ledger-line);
+    color: #fff;
+    border: none;
+    padding: 9px 16px;
+    border-radius: 8px;
+    font-weight: 600;
+    font-size: 13px;
+    cursor: pointer;
+    font-family: inherit;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .btn-export:hover { background: #0E8058; }
+  .header-actions { display: flex; align-items: center; gap: 16px; }
+  .no-session-banner {
+    max-width: 640px;
+    margin: 80px auto;
+    text-align: center;
+    padding: 32px;
+    background: #fff;
+    border: 1px solid var(--rule);
+    border-radius: 16px;
+  }
+  .no-session-banner a { color: var(--ledger-line); font-weight: 600; }
+  .hidden { display: none !important; }
+
   .add-form {
     display: flex;
     gap: 6px;
@@ -297,12 +326,20 @@
 
 <header>
   <div class="logo"><span class="logo-mark"></span>gruper</div>
-  <div class="project-name">Продажи маркетплейса — черновик</div>
+  <div class="header-actions">
+    <div class="project-name" id="projectName">сессия не выбрана</div>
+    <a class="btn-export hidden" id="exportBtn" href="#">Скачать результат</a>
+  </div>
 </header>
 
-<div class="workspace">
+<div class="no-session-banner hidden" id="noSessionBanner">
+  <h1>Сессия не найдена</h1>
+  <p>Откройте эту страницу через <a href="upload.html">загрузку файла</a> — в URL должен быть параметр <span class="mono">?session=...</span>.</p>
+</div>
+
+<div class="workspace" id="workspace">
   <div class="toolbar">
-    <h1>Разберите колонку «Товар»</h1>
+    <h1>Разберите значения</h1>
     <span class="hint">Отметьте значения слева и отправьте в нужную категорию справа</span>
   </div>
 
@@ -340,7 +377,7 @@
   <button class="clear" id="bulkClear">Снять выбор</button>
 </div>
 
-<div class="reconcile-bar">
+<div class="reconcile-bar" id="reconcileBar">
   <div class="reconcile-item">
     <div class="reconcile-label">Итого по файлу</div>
     <div class="reconcile-value mono" id="totalFile">0 ₽</div>
@@ -356,25 +393,41 @@
 </div>
 
 <script>
-  // --- Mock data: simulates rows already parsed from an uploaded file ---
-  const rawEntities = [
-    { id: 'e1', name: 'носки чёрные 42', value: 4500, group: null },
-    { id: 'e2', name: 'носки чёрные', value: 1200, group: null },
-    { id: 'e3', name: 'ботинки зимние жен.', value: 32000, group: null },
-    { id: 'e4', name: 'шапка вязаная бел.', value: 8900, group: null },
-    { id: 'e5', name: 'кроссовки бел. 40', value: 26000, group: null },
-    { id: 'e6', name: 'трусы муж. XL', value: 3400, group: null },
-    { id: 'e7', name: 'бельё термо комплект', value: 15600, group: null },
-    { id: 'e8', name: 'сандалии дет.', value: 9800, group: null },
-    { id: 'e9', name: 'перчатки кожаные', value: 7200, group: null },
-    { id: 'e10', name: 'шарф шерстяной', value: 5100, group: null },
-  ];
+  const API_BASE = '/api';
+  const params = new URLSearchParams(window.location.search);
+  const sessionId = params.get('session');
 
-  let groups = {}; // id -> {id, name, parentId}
+  if (!sessionId) {
+    document.getElementById('noSessionBanner').classList.remove('hidden');
+    document.getElementById('workspace').classList.add('hidden');
+    document.getElementById('bulkBar').classList.add('hidden');
+    document.getElementById('reconcileBar').classList.add('hidden');
+    throw new Error('no session id in URL');
+  }
+  document.getElementById('projectName').textContent = `сессия ${sessionId.slice(0, 8)}…`;
+  document.getElementById('exportBtn').href = `${API_BASE}/session/${encodeURIComponent(sessionId)}/export`;
+  document.getElementById('exportBtn').classList.remove('hidden');
+
+  // --- Local state, populated from the real API ---
+  let entities = [];               // [{value, occurrences, is_new}] from GET /entities
+  // Local tree mirror of what we've created this page-load. There is no
+  // GET /session/{id}/groups endpoint in this API surface (by design —
+  // see the endpoint list), so a hard page reload after building a tree
+  // loses the client-side tree shape; the server-side assignment itself
+  // is NOT lost (it lives in Redis), it just can't be re-displayed as a
+  // tree without a groups-listing endpoint. Documented limitation, not a
+  // bug in this pass.
+  let groups = {};                 // id -> {id, name, parentId}
   let nextGroupId = 1;
+  // value -> group_id, for entities we know are assigned (either we just
+  // assigned them this page-load, or the initial /summary said they're
+  // not unassigned — the latter case gets a placeholder id since we don't
+  // know which group without a groups-listing endpoint).
+  let assignedGroup = new Map();
+  let latestSummary = null;        // GET /summary response
 
   function addGroup(name, parentId) {
-    const id = 'g' + (nextGroupId++);
+    const id = 'g' + (nextGroupId++) + '_' + Math.random().toString(36).slice(2, 6);
     groups[id] = { id, name, parentId };
     return id;
   }
@@ -397,10 +450,61 @@
     return path;
   }
 
-  function fmt(n) { return n.toLocaleString('ru-RU') + ' ₽'; }
+  function fmt(decimalString) {
+    const n = parseFloat(decimalString);
+    if (Number.isNaN(n)) return '0 ₽';
+    return n.toLocaleString('ru-RU', { maximumFractionDigits: 2 }) + ' ₽';
+  }
 
   let selected = new Set();
   let bulkTargetId = null;
+
+  // ---------- API calls ----------
+  async function apiFetch(path, options) {
+    const resp = await fetch(`${API_BASE}${path}`, options);
+    if (!resp.ok) {
+      let detail = `Ошибка (${resp.status})`;
+      try {
+        const body = await resp.json();
+        if (body.detail) detail = body.detail;
+      } catch (e) { /* non-JSON error body */ }
+      const err = new Error(detail);
+      err.status = resp.status;
+      throw err;
+    }
+    if (resp.status === 204) return null;
+    return resp.json();
+  }
+
+  async function loadEntities() {
+    entities = await apiFetch(`/session/${encodeURIComponent(sessionId)}/entities`);
+  }
+
+  async function loadSummary() {
+    latestSummary = await apiFetch(`/session/${encodeURIComponent(sessionId)}/summary`);
+    // Any entity the summary doesn't list as unassigned is assigned to
+    // *some* group server-side. If we don't already know which group
+    // (e.g. we didn't just do the assigning ourselves this page-load),
+    // record a placeholder so it's correctly hidden from "Нераспределённые"
+    // rather than incorrectly shown as free.
+    const unassignedSet = new Set(latestSummary.unassigned_entities);
+    entities.forEach(e => {
+      if (!unassignedSet.has(e.value) && !assignedGroup.has(e.value)) {
+        assignedGroup.set(e.value, '__unknown__');
+      }
+    });
+  }
+
+  async function init() {
+    try {
+      await loadEntities();
+      await loadSummary();
+    } catch (err) {
+      alert('Не удалось загрузить сессию: ' + err.message);
+      return;
+    }
+    render();
+  }
 
   function render() {
     renderEntityList();
@@ -413,10 +517,10 @@
     const search = document.getElementById('searchBox').value.trim().toLowerCase();
     const list = document.getElementById('entityList');
     list.innerHTML = '';
-    const unassigned = rawEntities.filter(e => e.group === null);
+    const unassigned = entities.filter(e => !assignedGroup.has(e.value));
     document.getElementById('unassignedCount').textContent = unassigned.length;
 
-    const filtered = unassigned.filter(e => e.name.includes(search));
+    const filtered = unassigned.filter(e => e.value.toLowerCase().includes(search));
     if (filtered.length === 0) {
       list.innerHTML = `<div class="empty-state">${unassigned.length === 0 ? 'Все значения распределены' : 'Ничего не найдено'}</div>`;
       return;
@@ -424,23 +528,40 @@
     filtered.forEach(e => {
       const row = document.createElement('label');
       row.className = 'entity-row';
-      row.innerHTML = `
-        <input type="checkbox" data-id="${e.id}" ${selected.has(e.id) ? 'checked' : ''}>
-        <span class="entity-name">${e.name}</span>
-        <span class="entity-meta mono">${fmt(e.value)}</span>
-      `;
-      row.querySelector('input').addEventListener('change', ev => {
-        if (ev.target.checked) selected.add(e.id); else selected.delete(e.id);
+
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = selected.has(e.value);
+      checkbox.addEventListener('change', ev => {
+        if (ev.target.checked) selected.add(e.value); else selected.delete(e.value);
         renderBulkBar();
       });
+
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'entity-name';
+      nameSpan.textContent = e.value; // textContent, not innerHTML — real values can contain any characters
+
+      const metaSpan = document.createElement('span');
+      metaSpan.className = 'entity-meta mono';
+      metaSpan.textContent = `× ${e.occurrences}`;
+
+      row.appendChild(checkbox);
+      row.appendChild(nameSpan);
+      if (e.is_new) {
+        const badge = document.createElement('span');
+        badge.className = 'entity-badge-new';
+        badge.textContent = 'новое';
+        row.appendChild(badge);
+      }
+      row.appendChild(metaSpan);
+
       list.appendChild(row);
     });
   }
 
   function groupTotal(groupId) {
-    let total = rawEntities.filter(e => e.group === groupId).reduce((s, e) => s + e.value, 0);
-    children(groupId).forEach(c => { total += groupTotal(c.id); });
-    return total;
+    if (!latestSummary) return 0;
+    return parseFloat(latestSummary.rollup_totals[groupId] || '0');
   }
 
   function renderTree() {
@@ -452,10 +573,6 @@
     }
     roots.forEach(g => container.appendChild(renderNode(g)));
 
-    // rebuild the custom dropdown's option list with only leaf groups —
-    // if the previously-selected target stopped being a leaf (gained a
-    // child since last render), clear the selection rather than silently
-    // keep an invalid target.
     if (bulkTargetId && !isLeaf(bulkTargetId)) {
       bulkTargetId = null;
       document.getElementById('dropdownLabel').textContent = 'Выберите категорию…';
@@ -497,14 +614,32 @@
     const row = document.createElement('div');
     row.className = 'tree-node-row' + (isLeaf(g.id) ? '' : ' not-leaf');
     row.dataset.groupId = g.id;
-    row.innerHTML = `
-      <span class="tree-label">${g.name}</span>
-      <span class="tree-actions">
-        <span class="tree-total mono">${fmt(groupTotal(g.id))}</span>
-        <button class="icon-btn" data-action="add-sub" data-id="${g.id}">+ подкатегория</button>
-        <button class="icon-btn" data-action="delete" data-id="${g.id}">удалить</button>
-      </span>
-    `;
+
+    const label = document.createElement('span');
+    label.className = 'tree-label';
+    label.textContent = g.name;
+
+    const actions = document.createElement('span');
+    actions.className = 'tree-actions';
+    const total = document.createElement('span');
+    total.className = 'tree-total mono';
+    total.textContent = fmt(groupTotal(g.id));
+    const addSubBtn = document.createElement('button');
+    addSubBtn.className = 'icon-btn';
+    addSubBtn.dataset.action = 'add-sub';
+    addSubBtn.dataset.id = g.id;
+    addSubBtn.textContent = '+ подкатегория';
+    const delBtn = document.createElement('button');
+    delBtn.className = 'icon-btn';
+    delBtn.dataset.action = 'delete';
+    delBtn.dataset.id = g.id;
+    delBtn.textContent = 'удалить';
+    actions.appendChild(total);
+    actions.appendChild(addSubBtn);
+    actions.appendChild(delBtn);
+
+    row.appendChild(label);
+    row.appendChild(actions);
     wrap.appendChild(row);
 
     const childWrap = document.createElement('div');
@@ -529,15 +664,13 @@
   }
 
   function renderReconciliation() {
-    const total = rawEntities.reduce((s, e) => s + e.value, 0);
-    const unassignedTotal = rawEntities.filter(e => e.group === null).reduce((s, e) => s + e.value, 0);
-    const groupsTotal = total - unassignedTotal;
-
-    document.getElementById('totalFile').textContent = fmt(total);
-    document.getElementById('totalGroups').textContent = fmt(groupsTotal);
+    if (!latestSummary) return;
+    document.getElementById('totalFile').textContent = fmt(latestSummary.grand_total);
+    const groupsTotal = parseFloat(latestSummary.grand_total) - parseFloat(latestSummary.unassigned_total);
+    document.getElementById('totalGroups').textContent = fmt(String(groupsTotal));
     const unassignedEl = document.getElementById('totalUnassigned');
-    unassignedEl.textContent = fmt(unassignedTotal);
-    unassignedEl.classList.toggle('zero', unassignedTotal === 0);
+    unassignedEl.textContent = fmt(latestSummary.unassigned_total);
+    unassignedEl.classList.toggle('zero', parseFloat(latestSummary.unassigned_total) === 0);
   }
 
   // --- Event wiring ---
@@ -547,7 +680,7 @@
     showAddForm(null, document.getElementById('treeContainer'), true);
   });
 
-  document.getElementById('treeContainer').addEventListener('click', e => {
+  document.getElementById('treeContainer').addEventListener('click', async e => {
     const btn = e.target.closest('button[data-action]');
     if (!btn) return;
     const id = btn.dataset.id;
@@ -555,10 +688,20 @@
       const row = btn.closest('.tree-node').querySelector('.tree-node-row');
       showAddForm(id, row, false);
     } else if (btn.dataset.action === 'delete') {
-      if (children(id).length > 0) { alert('Сначала удалите или перенесите подкатегории'); return; }
-      const hasAssigned = rawEntities.some(en => en.group === id);
-      if (hasAssigned) { alert('В этой категории есть значения — сначала перенесите их'); return; }
+      // No client-side pre-check here on purpose: the API's 409 + its
+      // `detail` message (GroupNotEmptyError, from core/tree.py) is the
+      // single source of truth for why a delete was refused — including
+      // cases the client can't see itself, like an entity assigned to
+      // this group from a previous page-load we only know about via the
+      // "__unknown__" placeholder.
+      try {
+        await apiFetch(`/session/${encodeURIComponent(sessionId)}/groups/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      } catch (err) {
+        alert(err.message);
+        return;
+      }
       delete groups[id];
+      await loadSummary();
       render();
     }
   });
@@ -576,9 +719,24 @@
     }
     const input = form.querySelector('input');
     input.focus();
-    function submit() {
+    async function submit() {
       const name = input.value.trim();
-      if (name) { addGroup(name, parentId); render(); }
+      if (!name) return;
+      const groupId = 'g' + (nextGroupId) + '_' + Math.random().toString(36).slice(2, 6);
+      try {
+        await apiFetch(`/session/${encodeURIComponent(sessionId)}/groups`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ group_id: groupId, name, parent_id: parentId }),
+        });
+      } catch (err) {
+        alert(err.message);
+        return;
+      }
+      nextGroupId++;
+      groups[groupId] = { id: groupId, name, parentId };
+      await loadSummary();
+      render();
     }
     form.querySelector('button').addEventListener('click', submit);
     input.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
@@ -600,26 +758,32 @@
     document.getElementById('dropdownLabel').classList.add('placeholder');
     render();
   });
-  document.getElementById('bulkSend').addEventListener('click', () => {
+  document.getElementById('bulkSend').addEventListener('click', async () => {
     if (!bulkTargetId || !isLeaf(bulkTargetId)) return;
-    selected.forEach(id => {
-      const entity = rawEntities.find(e => e.id === id);
-      if (entity) entity.group = bulkTargetId;
-    });
+    const entityIds = Array.from(selected);
+    const btn = document.getElementById('bulkSend');
+    btn.disabled = true;
+    try {
+      await apiFetch(`/session/${encodeURIComponent(sessionId)}/assign`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ entity_ids: entityIds, group_id: bulkTargetId }),
+      });
+    } catch (err) {
+      alert(err.message);
+      btn.disabled = false;
+      return;
+    }
+    entityIds.forEach(value => assignedGroup.set(value, bulkTargetId));
     selected.clear();
     bulkTargetId = null;
     document.getElementById('dropdownLabel').textContent = 'Выберите категорию…';
     document.getElementById('dropdownLabel').classList.add('placeholder');
+    await loadSummary();
     render();
   });
 
-  // Seed a couple of starter categories so the demo isn't an empty tree
-  const clothesId = addGroup('Одежда', null);
-  addGroup('Верхняя одежда', clothesId);
-  addGroup('Бельё', clothesId);
-  addGroup('Обувь', null);
-
-  render();
+  init();
 </script>
 
 </body>
