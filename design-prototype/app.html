@@ -328,6 +328,7 @@
   <div class="logo"><span class="logo-mark"></span>gruper</div>
   <div class="header-actions">
     <div class="project-name" id="projectName">сессия не выбрана</div>
+    <button class="btn-ghost hidden" id="saveProjectBtn">Сохранить как проект</button>
     <a class="btn-export hidden" id="exportBtn" href="#">Скачать результат</a>
   </div>
 </header>
@@ -407,16 +408,14 @@
   document.getElementById('projectName').textContent = `сессия ${sessionId.slice(0, 8)}…`;
   document.getElementById('exportBtn').href = `${API_BASE}/session/${encodeURIComponent(sessionId)}/export`;
   document.getElementById('exportBtn').classList.remove('hidden');
+  document.getElementById('saveProjectBtn').classList.remove('hidden');
 
   // --- Local state, populated from the real API ---
   let entities = [];               // [{value, occurrences, is_new}] from GET /entities
-  // Local tree mirror of what we've created this page-load. There is no
-  // GET /session/{id}/groups endpoint in this API surface (by design —
-  // see the endpoint list), so a hard page reload after building a tree
-  // loses the client-side tree shape; the server-side assignment itself
-  // is NOT lost (it lives in Redis), it just can't be re-displayed as a
-  // tree without a groups-listing endpoint. Documented limitation, not a
-  // bug in this pass.
+  // Tree mirror, hydrated from GET /session/{id}/groups on load (see
+  // loadGroups() below) and then kept in sync locally as the user
+  // creates/deletes groups this page-load — the server is always the
+  // source of truth, this is just a display cache.
   let groups = {};                 // id -> {id, name, parentId}
   let nextGroupId = 1;
   // value -> group_id, for entities we know are assigned (either we just
@@ -460,8 +459,11 @@
   let bulkTargetId = null;
 
   // ---------- API calls ----------
-  async function apiFetch(path, options) {
-    const resp = await fetch(`${API_BASE}${path}`, options);
+  async function apiFetch(path, options = {}) {
+    // credentials: 'include' so the httpOnly auth cookie set by
+    // POST /api/auth/identify travels with every call — matters for
+    // /projects* endpoints, harmless (ignored) for everything else.
+    const resp = await fetch(`${API_BASE}${path}`, { credentials: 'include', ...options });
     if (!resp.ok) {
       let detail = `Ошибка (${resp.status})`;
       try {
@@ -474,6 +476,14 @@
     }
     if (resp.status === 204) return null;
     return resp.json();
+  }
+
+  async function loadGroups() {
+    const serverGroups = await apiFetch(`/session/${encodeURIComponent(sessionId)}/groups`);
+    groups = {};
+    serverGroups.forEach(g => {
+      groups[g.id] = { id: g.id, name: g.name, parentId: g.parent_id };
+    });
   }
 
   async function loadEntities() {
@@ -497,6 +507,7 @@
 
   async function init() {
     try {
+      await loadGroups();
       await loadEntities();
       await loadSummary();
     } catch (err) {
@@ -781,6 +792,49 @@
     document.getElementById('dropdownLabel').classList.add('placeholder');
     await loadSummary();
     render();
+  });
+
+  // ---------- Save as Project ("мягкий email", no password) ----------
+  async function doSaveProject(name) {
+    const result = await apiFetch('/projects', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId, name }),
+    });
+    alert(`Проект «${result.name}» сохранён. Он появится на вашей странице /dashboard.html — при загрузке нового файла для этого же отчёта уже знакомые значения распределятся сами.`);
+  }
+
+  document.getElementById('saveProjectBtn').addEventListener('click', async () => {
+    const name = prompt('Название проекта (например: «Продажи маркетплейса»):');
+    if (!name || !name.trim()) return;
+    try {
+      await doSaveProject(name.trim());
+      return;
+    } catch (err) {
+      if (err.status !== 401) {
+        alert('Не удалось сохранить проект: ' + err.message);
+        return;
+      }
+    }
+    // 401 — not identified yet in this browser: ask for email once (no
+    // password, no confirmation — see README "мягкий email"), then retry.
+    const email = prompt('Чтобы сохранять проекты, укажите email (без пароля):');
+    if (!email || !email.trim()) return;
+    try {
+      await apiFetch('/auth/identify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim() }),
+      });
+    } catch (err) {
+      alert('Не удалось войти: ' + err.message);
+      return;
+    }
+    try {
+      await doSaveProject(name.trim());
+    } catch (err) {
+      alert('Не удалось сохранить проект: ' + err.message);
+    }
   });
 
   init();

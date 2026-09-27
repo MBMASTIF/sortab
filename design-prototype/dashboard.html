@@ -202,7 +202,7 @@
   <a class="logo" href="index.html"><span class="logo-mark"></span>gruper</a>
   <div class="account-cluster">
     <span class="tier-badge">Тариф: Бесплатно</span>
-    <div class="avatar" title="Аккаунт">АМ</div>
+    <div class="avatar hidden" id="avatar" title="Аккаунт"></div>
   </div>
 </header>
 
@@ -218,58 +218,32 @@
   <main>
     <div class="greeting">
       <div>
-        <h1>Добрый день, Андрей</h1>
+        <h1 id="greetingTitle">Добрый день</h1>
         <p>Ваши сохранённые проекты и инструменты для разовой обработки</p>
       </div>
       <div class="quota-line">
-        Проекты: <span class="mono">1 / 1</span><br>
+        Проекты: <span class="mono" id="quotaProjects">— / —</span><br>
         PDF-страницы в этом месяце: <span class="mono">0 / 10</span>
       </div>
     </div>
 
-    <section class="block">
+    <!-- Shown instead of the project grid when the browser hasn't
+         identified itself yet (GET /api/projects -> 401). No password,
+         no confirmation — see README "мягкий email". -->
+    <section class="block hidden" id="loginBlock">
+      <h2>Войдите, чтобы увидеть сохранённые проекты</h2>
+      <p class="section-hint">Проекты привязаны к email — без пароля и подтверждения на этом шаге</p>
+      <form id="loginForm" style="display: flex; gap: 10px; max-width: 420px;">
+        <input type="email" id="loginEmail" placeholder="you@example.com" required
+          style="flex: 1; padding: 10px 14px; border: 1px solid var(--rule); border-radius: 9px; font-family: inherit; font-size: 14px;">
+        <button type="submit" class="btn-open" style="border-radius: 9px;">Войти</button>
+      </form>
+    </section>
+
+    <section class="block hidden" id="projectsBlock">
       <h2>Проекты</h2>
       <p class="section-hint">Сохранённое дерево категорий для отчёта, который вы разбираете регулярно</p>
-      <div class="project-grid">
-
-        <div class="card project-card">
-          <div class="project-top">
-            <svg class="file-icon" width="28" height="28" viewBox="0 0 28 28" fill="none">
-              <rect x="4" y="3" width="20" height="22" rx="2.5" stroke="currentColor" stroke-width="1.6"/>
-              <path d="M4 10.5H24" stroke="currentColor" stroke-width="1.6"/>
-              <path d="M10.5 10.5V25" stroke="currentColor" stroke-width="1.6"/>
-              <path d="M17.5 10.5V25" stroke="currentColor" stroke-width="1.6"/>
-              <path d="M4 17.5H24" stroke="currentColor" stroke-width="1.6"/>
-            </svg>
-            <div class="project-meta">
-              <div class="name">Продажи маркетплейса — черновик</div>
-              <div class="sub">Excel · 10 значений · WB-экспорт</div>
-            </div>
-          </div>
-          <div>
-            <div class="progress-track"><div class="progress-fill" style="width: 4%"></div></div>
-            <div class="progress-label">
-              <span>Разобрано</span>
-              <span class="mono">4 500 ₽ из 113 700 ₽</span>
-            </div>
-          </div>
-          <div class="project-actions">
-            <span class="edited-at">Изменено сегодня в 14:32</span>
-            <a class="btn-open" href="app.html">Продолжить</a>
-          </div>
-        </div>
-
-        <div class="card locked-card">
-          <svg class="lock-icon" width="26" height="26" viewBox="0 0 26 26" fill="none">
-            <rect x="6" y="12" width="14" height="10" rx="2" stroke="currentColor" stroke-width="1.6"/>
-            <path d="M9 12V8.5C9 5.98 11.02 4 13.5 4C15.98 4 18 5.98 18 8.5V12" stroke="currentColor" stroke-width="1.6"/>
-          </svg>
-          <div class="title">Второй проект</div>
-          <div class="sub">На тарифе «Бесплатно» доступен 1 сохранённый проект</div>
-          <a class="btn-upgrade" href="index.html#pricing">Улучшить тариф</a>
-        </div>
-
-      </div>
+      <div class="project-grid" id="projectGrid"></div>
     </section>
 
     <section class="block">
@@ -340,5 +314,144 @@
   </aside>
 </div>
 
+
+<script>
+  const API_BASE = '/api';
+  const FREE_TIER_PROJECT_LIMIT = 1; // mirrors backend/projects_store.py FREE_TIER_PROJECT_LIMIT
+
+  async function apiFetch(path, options = {}) {
+    const resp = await fetch(`${API_BASE}${path}`, { credentials: 'include', ...options });
+    return resp;
+  }
+
+  function fileIconSvg() {
+    return `<svg class="file-icon" width="28" height="28" viewBox="0 0 28 28" fill="none">
+      <rect x="4" y="3" width="20" height="22" rx="2.5" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M4 10.5H24" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M10.5 10.5V25" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M17.5 10.5V25" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M4 17.5H24" stroke="currentColor" stroke-width="1.6"/>
+    </svg>`;
+  }
+
+  function formatEditedAt(isoString) {
+    const d = new Date(isoString);
+    if (Number.isNaN(d.getTime())) return '';
+    return 'Изменено ' + d.toLocaleString('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
+  }
+
+  // Projects store only the tree + entity dictionary, never the raw file
+  // (see README — "сырые файлы/DataFrame — никогда"). Without an active
+  // working session there is no total sum and no per-row data to compute
+  // "X ₽ из Y ₽ разобрано" against, so a live progress bar here would be
+  // fabricated. Decision: show what IS honestly known from stored
+  // metadata alone — group count + last-saved time — instead of a fake
+  // progress bar. Re-adding a real progress indicator would need either
+  // storing a lightweight running total per project (a real schema
+  // change) or reading it live from an active session, neither of which
+  // exists yet.
+  function projectCard(p) {
+    const card = document.createElement('div');
+    card.className = 'card project-card';
+    card.innerHTML = `
+      <div class="project-top">
+        ${fileIconSvg()}
+        <div class="project-meta">
+          <div class="name"></div>
+          <div class="sub"></div>
+        </div>
+      </div>
+      <div class="project-actions">
+        <span class="edited-at"></span>
+        <a class="btn-open" href="upload.html">Загрузить новый файл</a>
+      </div>
+    `;
+    card.querySelector('.name').textContent = p.name;
+    card.querySelector('.sub').textContent = `${p.groups_count} ${p.groups_count === 1 ? 'категория' : 'категорий'} · группировка «${p.entity_column}» · сумма «${p.metric_column}»`;
+    card.querySelector('.edited-at').textContent = formatEditedAt(p.updated_at);
+    return card;
+  }
+
+  function lockedCard() {
+    const card = document.createElement('div');
+    card.className = 'card locked-card';
+    card.innerHTML = `
+      <svg class="lock-icon" width="26" height="26" viewBox="0 0 26 26" fill="none">
+        <rect x="6" y="12" width="14" height="10" rx="2" stroke="currentColor" stroke-width="1.6"/>
+        <path d="M9 12V8.5C9 5.98 11.02 4 13.5 4C15.98 4 18 5.98 18 8.5V12" stroke="currentColor" stroke-width="1.6"/>
+      </svg>
+      <div class="title">Ещё один проект</div>
+      <div class="sub">На тарифе «Бесплатно» доступен ${FREE_TIER_PROJECT_LIMIT} сохранённый проект</div>
+      <a class="btn-upgrade" href="index.html#pricing">Улучшить тариф</a>
+    `;
+    return card;
+  }
+
+  function emptyState() {
+    const div = document.createElement('div');
+    div.className = 'card';
+    div.style.gridColumn = '1 / -1';
+    div.style.textAlign = 'center';
+    div.style.color = 'var(--ink-soft)';
+    div.style.padding = '32px';
+    div.innerHTML = `Пока нет сохранённых проектов. Разберите файл на <a href="upload.html" style="color: var(--ledger-line); font-weight: 600;">странице загрузки</a> и нажмите «Сохранить как проект».`;
+    return div;
+  }
+
+  async function loadProjects() {
+    const resp = await apiFetch('/projects');
+    if (resp.status === 401) {
+      document.getElementById('loginBlock').classList.remove('hidden');
+      document.getElementById('projectsBlock').classList.add('hidden');
+      document.getElementById('quotaProjects').textContent = '— / —';
+      return;
+    }
+    if (!resp.ok) return; // transient backend error — leave whatever was last shown
+
+    const projects = await resp.json();
+    document.getElementById('loginBlock').classList.add('hidden');
+    document.getElementById('projectsBlock').classList.remove('hidden');
+    document.getElementById('quotaProjects').textContent = `${projects.length} / ${FREE_TIER_PROJECT_LIMIT}`;
+
+    const grid = document.getElementById('projectGrid');
+    grid.innerHTML = '';
+    if (projects.length === 0) {
+      grid.appendChild(emptyState());
+    } else {
+      projects.forEach(p => grid.appendChild(projectCard(p)));
+      if (projects.length >= FREE_TIER_PROJECT_LIMIT) grid.appendChild(lockedCard());
+    }
+  }
+
+  document.getElementById('loginForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    const email = document.getElementById('loginEmail').value.trim();
+    if (!email) return;
+    const btn = e.target.querySelector('button');
+    btn.disabled = true;
+    try {
+      const resp = await apiFetch('/auth/identify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => ({}));
+        alert(body.detail || `Ошибка (${resp.status})`);
+        return;
+      }
+      const body = await resp.json();
+      document.getElementById('greetingTitle').textContent = `Добрый день, ${body.email}`;
+      const avatar = document.getElementById('avatar');
+      avatar.textContent = body.email.slice(0, 2).toUpperCase();
+      avatar.classList.remove('hidden');
+      await loadProjects();
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  loadProjects();
+</script>
 </body>
 </html>

@@ -200,6 +200,13 @@
       </div>
     </div>
 
+    <div class="hidden" id="projectPickWrap" style="margin-bottom: 20px;">
+      <label for="projectSelect" style="font-size: 13.5px; color: var(--ink-soft); display: block; margin-bottom: 6px;">Это отчёт для проекта — используем сохранённый словарь категорий:</label>
+      <select id="projectSelect" style="padding: 9px 12px; border: 1px solid var(--rule); border-radius: 9px; font-family: inherit; font-size: 13.5px; background: #fff; min-width: 280px;">
+        <option value="">Новый проект (без сохранённого словаря)</option>
+      </select>
+    </div>
+
     <div class="preview-card">
       <div class="preview-scroll">
         <table class="preview" id="previewTable"></table>
@@ -309,6 +316,32 @@
     document.getElementById('continueBar').classList.remove('hidden');
 
     render();
+    maybeShowProjectPicker();
+  }
+
+  // ---------- Project picker: only shown if the browser is already
+  // identified (GET /api/projects returns 200) AND has at least one saved
+  // project. Anonymous visitors and identified-but-project-less users see
+  // nothing here — the upload flow behaves exactly as before for them. ----------
+  async function maybeShowProjectPicker() {
+    let resp;
+    try {
+      resp = await fetch(`${API_BASE}/projects`, { credentials: 'include' });
+    } catch (e) {
+      return; // backend unreachable for this optional lookup — don't block upload
+    }
+    if (!resp.ok) return; // 401: not identified yet in this browser
+    const list = await resp.json().catch(() => []);
+    if (!list.length) return;
+
+    const select = document.getElementById('projectSelect');
+    list.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = `${p.name} (${p.groups_count} ${p.groups_count === 1 ? 'категория' : 'категорий'})`;
+      select.appendChild(opt);
+    });
+    document.getElementById('projectPickWrap').classList.remove('hidden');
   }
 
   // ---------- Preview / column picking (same interaction as before, now
@@ -466,6 +499,30 @@
       btn.classList.remove('is-disabled');
       btn.textContent = 'Продолжить';
       return;
+    }
+
+    // If the user picked an existing project, load its saved tree +
+    // dictionary into THIS session now — before app.html and before any
+    // manual sorting starts, so already-known values land in their
+    // groups automatically (see backend/main.py load_project_into_session).
+    const projectSelect = document.getElementById('projectSelect');
+    const chosenProjectId = projectSelect && projectSelect.value ? projectSelect.value : null;
+    if (chosenProjectId) {
+      try {
+        const loadResp = await fetch(`${API_BASE}/session/${encodeURIComponent(sessionId)}/load-project/${encodeURIComponent(chosenProjectId)}`, {
+          method: 'POST',
+          credentials: 'include',
+        });
+        if (loadResp.ok) {
+          const loadBody = await loadResp.json();
+          alert(`Словарь проекта применён: ${loadBody.known_entities_count} значений распознаны автоматически, ${loadBody.new_entities_count} новых нужно распределить вручную.`);
+        } else {
+          const loadErrBody = await loadResp.json().catch(() => ({}));
+          alert('Не удалось применить словарь проекта: ' + (loadErrBody.detail || loadResp.status) + ' — продолжаем с пустым деревом.');
+        }
+      } catch (e) {
+        alert('Не удалось связаться с сервером, чтобы применить словарь проекта — продолжаем с пустым деревом.');
+      }
     }
 
     window.location.href = `app.html?session=${encodeURIComponent(sessionId)}`;
