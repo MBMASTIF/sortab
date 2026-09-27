@@ -251,3 +251,27 @@ limit_req_status 429;
 - `pytest` из корня — 144/144, без изменений (эти тесты бьют по `TestClient`+`fakeredis`, live nginx их не касается).
 
 **Не закрыто этим проходом (отдельная задача на будущее, не rate limiting):** у анонимных `/api/tools/*` до сих пор нет реального лимита на число PDF-страниц за запрос (лимит 20 МБ по размеру файла есть, лимит по числу страниц — нет) — крупный PDF (сотни страниц) технически можно прогнать даже одним легитимно редким запросом, и это будет медленно (~100-140с по бенчмарку camelot). Это вопрос месячных квот/привязки к тарифу (см. «Пробелы, не закрытые монетизацией» выше), а не rate limiting — сознательно не трогал в этом проходе.
+
+## Домен, SSL, Secure-куки, закрытие от индексации (сделано 2026-09-27)
+
+**Домен:** `sortab.ru` подключён, DNS (`sortab.ru` и `www.sortab.ru`) указывает на `195.161.62.21` — подтверждено `nslookup` и `getent hosts` прямо на сервере.
+
+**SSL — Let's Encrypt через certbot (`apt install certbot python3-certbot-nginx`, версия 2.9.0):**
+- `server_name sortab.ru www.sortab.ru;` в `/etc/nginx/sites-available/gruper` (не в git, серверный конфиг).
+- Сертификат получен `certbot --nginx -d sortab.ru -d www.sortab.ru --redirect` — certbot сам добавил `listen 443 ssl` + пути к сертификату в основной server-блок и отдельный server-блок на 80, который редиректит на https 301 (кроме ACME-challenge путей).
+- Автообновление — `certbot.timer` (systemd), **проверено что реально `active`/`enabled`**, не просто «certbot сказал что поставил»: `systemctl is-active certbot.timer` → `active`, `systemctl is-enabled` → `enabled`, ближайший запуск через `systemctl status` виден в расписании (дважды в день). `certbot renew --dry-run` живьём прогнан до конца — `Congratulations, all simulated renewals succeeded`. После dry-run проверено что временные `/.well-known/acme-challenge/...` location-блоки, которые certbot добавляет на время челленджа, корректно убрались обратно (`nginx -t` чистый, `grep acme-challenge` конфига — 0 совпадений).
+- Сертификат истекает 2026-12-26 (90 дней, обновится автоматически таймером задолго до этого).
+- Живая проверка: `curl -I https://sortab.ru/` → `200 OK`; `curl -I http://sortab.ru/` → `301` → `Location: https://sortab.ru/`.
+
+**Secure-флаг auth-куки:** `backend/auth.py` уже читал `GRUPER_COOKIE_SECURE` из окружения (по умолчанию выключено, см. комментарий в коде про отсутствие HTTPS на тот момент). В `/etc/systemd/system/gruper-backend.service` (не в git) добавлена строка `Environment=GRUPER_COOKIE_SECURE=1`, `systemctl daemon-reload && systemctl restart gruper-backend`. Живая проверка: `POST https://sortab.ru/api/auth/identify` → `Set-Cookie: gruper_session=...; HttpOnly; Max-Age=7776000; Path=/; SameSite=lax; Secure` — флаг `Secure` на месте.
+
+**Полное закрытие от индексации (сайт ещё в разработке) — три независимых слоя:**
+1. `robots.txt` в корне статики (`design-prototype/robots.txt`, в git) — `User-agent: *` / `Disallow: /`.
+2. `<meta name="robots" content="noindex, nofollow">` во всех 9 HTML-страницах прототипа (`index.html`, `app.html`, `upload.html`, `dashboard.html`, `unpivot.html`, `compare.html`, `mailmerge.html`, `split.html`, `watermark.html`) — в git.
+3. `add_header X-Robots-Tag "noindex, nofollow" always;` на уровне nginx server-блока (не в git) — покрывает вообще все ответы домена, включая `/api/*` (заголовок с `always` добавляется даже на ошибочные коды типа 404).
+
+Живая проверка всех трёх: `curl -I https://sortab.ru/` содержит `X-Robots-Tag: noindex, nofollow`; тот же заголовок присутствует и на `/api/*`-ответах (проверено на 404); `curl https://sortab.ru/robots.txt` отдаёт запрет; `curl https://sortab.ru/index.html` и `.../app.html` содержат мета-тег.
+
+**Функциональная проверка после переключения на HTTPS:** полный пользовательский сценарий через Playwright на реальном домене — `https://sortab.ru/upload.html` → загрузка настоящего xlsx-фикстура (`backend/tests/fixtures/similar_names_case_whitespace.xlsx`) → выбор колонок группировки/суммы → переход на `https://sortab.ru/app.html?session=...` → экран разбора значений с верным итогом (43 900 ₽, совпадает с суммой всех строк файла). Всё то же самое, что раньше работало по голому IP, работает и через новый домен с HTTPS.
+
+`pytest` из корня — 144/144, без изменений (эта фаза не трогала backend-логику, только nginx/systemd-конфиг сервера + фронтенд-мета-теги + одну env-переменную).
