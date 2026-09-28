@@ -257,6 +257,59 @@
   .upload-zone .upload-error { margin-top: 14px; font-size: 13.5px; color: var(--stamp-dark); font-weight: 600; }
   .hidden { display: none !important; }
   .spinner-line { font-size: 13.5px; color: var(--ink-soft); padding: 24px; text-align: center; }
+
+  /* ---------- Multi-source consolidation (пп. 2/5 каталога услуг) ---------- */
+  .multi-toggle-wrap { text-align: center; margin-top: 14px; }
+  .link-btn {
+    background: none;
+    border: none;
+    color: var(--dimension-dark);
+    font-family: inherit;
+    font-size: 13.5px;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 6px 8px;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  .link-btn:hover { color: var(--ink); }
+
+  .queued-files { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+  .queued-file-chip {
+    display: flex; align-items: center; gap: 8px;
+    background: #fff;
+    border: 1.5px solid var(--rule);
+    border-radius: 9px;
+    padding: 7px 8px 7px 12px;
+    font-size: 13px;
+  }
+  .queued-file-name { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .queued-file-remove {
+    background: none; border: none; cursor: pointer; color: var(--ink-soft);
+    font-size: 14px; line-height: 1; padding: 2px 4px; font-family: inherit;
+  }
+  .queued-file-remove:hover { color: var(--stamp-dark); }
+
+  .batch-actions { display: flex; align-items: center; gap: 14px; margin-top: 18px; }
+
+  .source-card { margin-bottom: 18px; }
+  .source-card-bar {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 12px 14px; border-bottom: 1px solid var(--rule-light); background: var(--paper-raised);
+  }
+  .source-label-wrap { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-soft); font-weight: 600; }
+  .source-label-input {
+    font-family: inherit; font-size: 13.5px; padding: 6px 10px;
+    border: 1.5px solid var(--rule); border-radius: 8px; min-width: 160px; color: var(--ink);
+  }
+  .source-label-input:focus { outline: none; border-color: var(--dimension); }
+  .source-remove-btn {
+    background: none; border: 1.5px solid var(--rule); border-radius: 8px; cursor: pointer;
+    font-family: inherit; font-size: 12.5px; color: var(--stamp-dark); padding: 6px 10px;
+  }
+  .source-remove-btn:hover { border-color: var(--stamp); background: rgba(232,84,61,0.06); }
+  .source-filename-line { padding: 10px 14px 0; font-size: 12.5px; color: var(--ink-soft); }
+  table.source-preview-table { table-layout: fixed; }
 </style>
 </head>
 <body>
@@ -280,6 +333,39 @@
     </div>
     <div class="spinner-line hidden" id="uploadSpinner">Загружаем и разбираем файл…</div>
     <div class="upload-error hidden" id="uploadError"></div>
+  </div>
+
+  <div class="multi-toggle-wrap" id="multiToggleWrap">
+    <button type="button" class="link-btn" id="multiSourceToggle">+ Объединить несколько файлов или листов одного файла</button>
+  </div>
+
+  <!-- ---------- Multi-source consolidation: step 1, pick files ----------
+       Каталог услуг пп. 2/5 — несколько источников / объединение листов.
+       See README "Задача: консолидация" and backend/consolidate.py. ---------- -->
+  <div class="hidden" id="batchPickZone">
+    <div class="upload-zone" id="batchDropZone">
+      <input type="file" id="batchFileInput" class="hidden" multiple accept=".xlsx,.xls,.xlsm,.xlsb,.ods,.csv,.txt">
+      <div class="upload-title">Перетащите файлы сюда или нажмите, чтобы выбрать несколько</div>
+      <div class="upload-hint">Можно выбрать сразу несколько файлов с одинаковой структурой (например, отчёты за разные месяцы) — или один файл с несколькими листами, разберём их отдельно автоматически</div>
+    </div>
+    <div class="queued-files" id="queuedFilesList"></div>
+    <div class="batch-actions">
+      <button type="button" class="btn-continue is-disabled" id="batchUploadBtn">Загрузить и разобрать</button>
+      <span class="spinner-line hidden" id="batchUploadSpinner">Загружаем и разбираем файлы…</span>
+    </div>
+    <div class="upload-error hidden" id="batchUploadError"></div>
+  </div>
+
+  <!-- ---------- Multi-source consolidation: step 2, per-source header
+       row + label, then hand off to the normal single-session flow
+       below via POST /api/upload/batch/{id}/consolidate. ---------- -->
+  <div class="hidden" id="batchSourcesWorkspace">
+    <p class="hint" style="margin-bottom: 20px;">Кликните по строке, где на самом деле начинается таблица, для каждого источника — подпись можно изменить (например, на «Июнь», «Июль»): она попадёт в новую колонку «Источник» объединённых данных, и по ней можно будет сделать разбивку (= сравнение по периодам).</p>
+    <div id="batchSourcesList"></div>
+    <div class="upload-error hidden" id="consolidateError"></div>
+    <div class="batch-actions">
+      <button type="button" class="btn-continue" id="consolidateBtn">Объединить и продолжить</button>
+    </div>
   </div>
 
   <div class="hidden" id="pickWorkspace">
@@ -428,17 +514,31 @@
     }
 
     const body = await resp.json();
+    enterPickWorkspace(body, body.filename || file.name);
+  }
+
+  // ---------- Shared by the normal single-file path (handleFile above)
+  // AND the multi-source consolidation path (consolidateBtn's handler
+  // below): both POST /api/upload and POST
+  // /api/upload/batch/{id}/consolidate return the exact same response
+  // shape (session_id + a RAW, header-agnostic preview grid — see
+  // backend/consolidate.py's module docstring for why), so from here on
+  // it's the identical, already-working column-role-picker screen. ----------
+  function enterPickWorkspace(body, displayName) {
     sessionId = body.session_id;
     rawRows = body.preview_rows;
     totalRowCount = body.row_count;
     headerRowIndex = guessHeaderRow(rawRows);
     columnRoles = new Array((rawRows[0] || []).length).fill(null);
 
-    document.getElementById('fileNameLabel').textContent = body.filename || file.name;
+    document.getElementById('fileNameLabel').textContent = displayName;
     document.getElementById('pageTitle').textContent = 'Какие колонки разбирать?';
     document.getElementById('pageHint').textContent = 'Кликните по строке, где на самом деле начинаются заголовки — а затем по названию каждой колонки ниже, чтобы выбрать для неё роль';
 
     document.getElementById('uploadZone').classList.add('hidden');
+    document.getElementById('multiToggleWrap').classList.add('hidden');
+    document.getElementById('batchPickZone').classList.add('hidden');
+    document.getElementById('batchSourcesWorkspace').classList.add('hidden');
     document.getElementById('pickWorkspace').classList.remove('hidden');
     document.getElementById('continueBar').classList.remove('hidden');
 
@@ -446,6 +546,260 @@
     maybeShowProjectPicker();
     maybeShowExplainerBanner();
   }
+
+  // ---------- Multi-source consolidation (несколько файлов / листы одного
+  // файла — каталог услуг пп. 2/5, see README "Задача: консолидация" and
+  // backend/consolidate.py). Two steps: pick files (POST
+  // /api/upload/batch, one raw preview per source — a multi-sheet Excel
+  // file auto-expands into one source per sheet server-side), then per-
+  // source header-row + label review (POST
+  // /api/upload/batch/{id}/consolidate) which hands off to
+  // enterPickWorkspace() above exactly like a normal single-file upload. ----------
+  let queuedFiles = [];   // File[] picked but not yet sent to the server
+  let batchId = null;
+  let batchSources = [];  // [{index, filename, previewRows, rowCount, columnsCount, headerRowIndex, label, removed}]
+
+  const multiToggleWrap = document.getElementById('multiToggleWrap');
+  const batchPickZone = document.getElementById('batchPickZone');
+  const batchDropZone = document.getElementById('batchDropZone');
+  const batchFileInput = document.getElementById('batchFileInput');
+  const queuedFilesList = document.getElementById('queuedFilesList');
+  const batchUploadBtn = document.getElementById('batchUploadBtn');
+  const batchSourcesWorkspace = document.getElementById('batchSourcesWorkspace');
+  const batchSourcesList = document.getElementById('batchSourcesList');
+
+  document.getElementById('multiSourceToggle').addEventListener('click', () => {
+    document.getElementById('uploadZone').classList.add('hidden');
+    multiToggleWrap.classList.add('hidden');
+    batchPickZone.classList.remove('hidden');
+    document.getElementById('pageTitle').textContent = 'Выберите несколько файлов';
+    document.getElementById('pageHint').textContent = 'Дальше — общий выбор колонок на объединённых данных, как обычно';
+  });
+
+  batchDropZone.addEventListener('click', () => batchFileInput.click());
+  batchDropZone.addEventListener('dragover', e => { e.preventDefault(); batchDropZone.classList.add('drag-over'); });
+  batchDropZone.addEventListener('dragleave', () => batchDropZone.classList.remove('drag-over'));
+  batchDropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    batchDropZone.classList.remove('drag-over');
+    addQueuedFiles(e.dataTransfer.files);
+  });
+  batchFileInput.addEventListener('change', () => {
+    addQueuedFiles(batchFileInput.files);
+    batchFileInput.value = ''; // lets the same filename be re-added later
+  });
+
+  function addQueuedFiles(fileList) {
+    for (const f of fileList) queuedFiles.push(f);
+    renderQueuedFiles();
+  }
+
+  function renderQueuedFiles() {
+    queuedFilesList.innerHTML = '';
+    queuedFiles.forEach((f, i) => {
+      const chip = document.createElement('div');
+      chip.className = 'queued-file-chip';
+      const name = document.createElement('span');
+      name.className = 'queued-file-name';
+      name.textContent = f.name;
+      name.title = f.name;
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'queued-file-remove';
+      remove.textContent = '✕';
+      remove.title = 'Убрать файл';
+      remove.addEventListener('click', () => { queuedFiles.splice(i, 1); renderQueuedFiles(); });
+      chip.appendChild(name);
+      chip.appendChild(remove);
+      queuedFilesList.appendChild(chip);
+    });
+    batchUploadBtn.classList.toggle('is-disabled', queuedFiles.length === 0);
+  }
+
+  function showBatchUploadError(message) {
+    batchUploadBtn.classList.remove('is-disabled');
+    document.getElementById('batchUploadSpinner').classList.add('hidden');
+    const errEl = document.getElementById('batchUploadError');
+    errEl.textContent = message;
+    errEl.classList.remove('hidden');
+  }
+
+  batchUploadBtn.addEventListener('click', async () => {
+    if (!queuedFiles.length) return;
+    document.getElementById('batchUploadError').classList.add('hidden');
+    batchUploadBtn.classList.add('is-disabled');
+    document.getElementById('batchUploadSpinner').classList.remove('hidden');
+
+    const formData = new FormData();
+    queuedFiles.forEach(f => formData.append('files', f));
+
+    let resp;
+    try {
+      resp = await fetch(`${API_BASE}/upload/batch`, { method: 'POST', body: formData });
+    } catch (err) {
+      showBatchUploadError('Не удалось связаться с сервером: ' + err.message);
+      return;
+    }
+
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({}));
+      showBatchUploadError(body.detail || `Ошибка загрузки (${resp.status})`);
+      return;
+    }
+
+    document.getElementById('batchUploadSpinner').classList.add('hidden');
+    const body = await resp.json();
+    batchId = body.batch_id;
+    batchSources = body.sources.map(s => ({
+      index: s.index,
+      filename: s.filename,
+      previewRows: s.preview_rows,
+      rowCount: s.row_count,
+      columnsCount: s.columns_count,
+      headerRowIndex: guessHeaderRow(s.preview_rows),
+      label: s.filename,
+      removed: false,
+    }));
+
+    batchPickZone.classList.add('hidden');
+    batchSourcesWorkspace.classList.remove('hidden');
+    document.getElementById('pageTitle').textContent = 'Проверьте источники';
+    document.getElementById('pageHint').textContent = '';
+    renderBatchSources();
+  });
+
+  function renderBatchSources() {
+    batchSourcesList.innerHTML = '';
+    batchSources.forEach(source => {
+      if (source.removed) return;
+      batchSourcesList.appendChild(buildSourceCard(source));
+    });
+    const activeCount = batchSources.filter(s => !s.removed).length;
+    document.getElementById('consolidateBtn').classList.toggle('is-disabled', activeCount === 0);
+  }
+
+  function buildSourceCard(source) {
+    const card = document.createElement('div');
+    card.className = 'preview-card source-card';
+
+    const bar = document.createElement('div');
+    bar.className = 'source-card-bar';
+
+    const labelWrap = document.createElement('label');
+    labelWrap.className = 'source-label-wrap';
+    labelWrap.textContent = 'Подпись источника:';
+    const labelInput = document.createElement('input');
+    labelInput.type = 'text';
+    labelInput.className = 'source-label-input';
+    labelInput.value = source.label;
+    labelInput.addEventListener('input', () => { source.label = labelInput.value; });
+    labelWrap.appendChild(labelInput);
+
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'source-remove-btn';
+    removeBtn.textContent = 'Убрать источник';
+    removeBtn.addEventListener('click', () => { source.removed = true; renderBatchSources(); });
+
+    bar.appendChild(labelWrap);
+    bar.appendChild(removeBtn);
+    card.appendChild(bar);
+
+    const filenameLine = document.createElement('div');
+    filenameLine.className = 'source-filename-line';
+    filenameLine.textContent = `${source.filename} · строк: ${source.rowCount}, колонок: ${source.columnsCount}`;
+    card.appendChild(filenameLine);
+
+    const scroll = document.createElement('div');
+    scroll.className = 'preview-scroll';
+    const table = document.createElement('table');
+    table.className = 'preview source-preview-table';
+    scroll.appendChild(table);
+    card.appendChild(scroll);
+    renderSourceTable(table, source);
+
+    const hint = document.createElement('div');
+    hint.className = 'table-hint';
+    hint.textContent = 'Кликните по строке, где начинается реальная таблица (заголовки колонок)';
+    card.appendChild(hint);
+
+    return card;
+  }
+
+  function renderSourceTable(table, source) {
+    table.innerHTML = '';
+    // Capped display (the full source can have thousands of rows) — only
+    // the header-row decision needs to be made here; the actual column
+    // ROLE picking happens once on the merged data, on the normal screen.
+    const rowsToShow = source.previewRows.slice(0, 8);
+    rowsToShow.forEach((row, rowIdx) => {
+      const tr = document.createElement('tr');
+      tr.className = 'header-row-candidate';
+      if (rowIdx === source.headerRowIndex) tr.classList.add('is-header');
+      else if (rowIdx < source.headerRowIndex) tr.classList.add('is-decor');
+      tr.addEventListener('click', () => {
+        source.headerRowIndex = rowIdx;
+        renderSourceTable(table, source);
+      });
+      row.forEach(cell => {
+        const td = document.createElement('td');
+        const span = document.createElement('span');
+        span.className = 'cell-text';
+        const text = cell === null || cell === undefined ? '' : String(cell);
+        span.textContent = text;
+        span.title = text;
+        td.appendChild(span);
+        tr.appendChild(td);
+      });
+      table.appendChild(tr);
+    });
+  }
+
+  function showConsolidateError(message) {
+    const btn = document.getElementById('consolidateBtn');
+    btn.classList.remove('is-disabled');
+    btn.textContent = 'Объединить и продолжить';
+    const errEl = document.getElementById('consolidateError');
+    errEl.textContent = message;
+    errEl.classList.remove('hidden');
+  }
+
+  document.getElementById('consolidateBtn').addEventListener('click', async () => {
+    const activeSources = batchSources.filter(s => !s.removed);
+    if (!activeSources.length || !batchId) return;
+
+    const btn = document.getElementById('consolidateBtn');
+    btn.classList.add('is-disabled');
+    btn.textContent = 'Объединяем…';
+    document.getElementById('consolidateError').classList.add('hidden');
+
+    let resp;
+    try {
+      resp = await fetch(`${API_BASE}/upload/batch/${encodeURIComponent(batchId)}/consolidate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sources: activeSources.map(s => ({
+            index: s.index,
+            header_row_index: s.headerRowIndex,
+            label: s.label,
+          })),
+        }),
+      });
+    } catch (err) {
+      showConsolidateError('Не удалось связаться с сервером: ' + err.message);
+      return;
+    }
+
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({}));
+      showConsolidateError(body.detail || `Ошибка (${resp.status})`);
+      return;
+    }
+
+    const body = await resp.json();
+    enterPickWorkspace(body, body.filename);
+  });
 
   // ---------- Explainer banner: shown once until dismissed (per browser,
   // localStorage — see README, wrapped in try/catch since a private
