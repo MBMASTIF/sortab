@@ -61,6 +61,7 @@ from backend.session_store import (
 )
 from backend.tools_store import ToolFileStore, ToolTokenNotFoundError
 from core.compare import compare_entities
+from core.hierarchical import HIERARCHICAL_SUFFIXES, detect_and_unflatten
 from core.export import (
     build_breakdown_sheet,
     build_detail_sheet,
@@ -206,12 +207,29 @@ async def upload_file(file: UploadFile = File(...), redis_conn: Redis = Depends(
         tmp.write(contents)
         tmp_path = tmp.name
 
-    try:
-        parsed = parse_file_raw(tmp_path)
-    except UnsupportedFileError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    finally:
-        os.unlink(tmp_path)
+    parsed = None
+    if suffix in HIERARCHICAL_SUFFIXES:
+        # Opportunistic: a real 1C export can be an "expanded group tree"
+        # report (see core/hierarchical.py) instead of a flat table —
+        # detect_and_unflatten() is conservative and returns None for
+        # anything it isn't confident about, so this never overrides the
+        # normal flat-file path on a guess. Broad except deliberately —
+        # this is a best-effort SECOND parse attempted before the normal
+        # one; nothing about it should ever be able to fail an upload that
+        # would otherwise have succeeded via parse_file_raw() below.
+        try:
+            parsed = detect_and_unflatten(tmp_path)
+        except Exception:
+            parsed = None
+
+    if parsed is None:
+        try:
+            parsed = parse_file_raw(tmp_path)
+        except UnsupportedFileError as exc:
+            os.unlink(tmp_path)
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    os.unlink(tmp_path)
 
     session_id = str(uuid.uuid4())
     session = Session(df=parsed.df)
