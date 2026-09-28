@@ -35,6 +35,7 @@ from backend.auth import (
     create_auth_token,
     resolve_user_id,
 )
+from backend.batch_store import BatchNotFoundError, BatchSource, UploadBatchStore
 from backend.columns import (
     ColumnMappingError,
     finalize_columns,
@@ -42,6 +43,7 @@ from backend.columns import (
     promote_header_row,
     resolve_unpivot_columns,
 )
+from backend.consolidate import ConsolidationError, SourceSpec, consolidate_sources
 from backend.db import get_engine
 from backend.projects_store import (
     ProjectLimitError,
@@ -71,7 +73,7 @@ from core.export import (
     export_workbook,
 )
 from core.mailmerge import MailMergeError, build_row_dicts, render_pdf as render_mailmerge_pdf, render_text, validate_template
-from core.parsing import UnsupportedFileError, parse_file_raw
+from core.parsing import UnsupportedFileError, list_excel_sheets, parse_file_raw
 from core.pdf_split import SplitError, split_by_marker
 from core.reconcile import RollupResult
 from core.session import Session, SessionError
@@ -94,6 +96,14 @@ def get_db() -> Engine:
     """FastAPI dependency. Overridden in tests (dependency_overrides) with
     an in-memory SQLite engine, mirroring get_redis() above."""
     return get_engine()
+
+
+def get_batch_store(redis_conn: Redis = Depends(get_redis)) -> UploadBatchStore:
+    """FastAPI dependency for the multi-source upload batch store
+    (backend/batch_store.py) — same Redis-connection-as-a-dependency
+    pattern as get_tools_store() right below, for the identical
+    multi-worker reason documented there."""
+    return UploadBatchStore(redis_conn)
 
 
 def get_tools_store(redis_conn: Redis = Depends(get_redis)) -> ToolFileStore:
@@ -135,6 +145,21 @@ class ColumnsRequest(BaseModel):
     # (e.g. "Менеджер"). Optional, any number, never overlaps with
     # categorized_columns or metric_columns.
     dimension_columns: list[int] = []
+
+
+class BatchSourceChoice(BaseModel):
+    """One entry of the consolidate request body — references a source
+    from the batch BY INDEX (not by position in this list), so a source
+    the user removed on the review screen can simply be left out, with no
+    need to keep the request array's length in lockstep with the batch's."""
+
+    index: int
+    header_row_index: int
+    label: str | None = None
+
+
+class ConsolidateRequest(BaseModel):
+    sources: list[BatchSourceChoice]
 
 
 class CreateGroupRequest(BaseModel):
@@ -185,6 +210,27 @@ def _decimal_str(value: Decimal) -> str:
     return str(value)
 
 
+def _translate_unsupported_file_error(message: str) -> str:
+    """core.parsing.UnsupportedFileError's own text is English (dev/test
+    facing — see its call sites), so this is the Russian text actually
+    shown on the upload screen, following the same
+    keep-the-domain-exception-English/translate-at-the-HTTP-boundary
+    pattern already used below for core.tree's errors (see delete_group /
+    assign_entities). Matched by substring rather than exception subclass
+    because UnsupportedFileError is raised for several distinct reasons
+    (bad extension, undetectable CSV encoding, unreadable/tableless PDF)
+    that each need their own message, without a broader refactor of
+    core/parsing.py's exception hierarchy."""
+    lowered = message.lower()
+    if "unsupported file extension" in lowered:
+        return "Неподдерживаемый формат файла — загрузите Excel (.xlsx/.xls/.xlsm/.xlsb/.ods), CSV или PDF"
+    if "encoding" in lowered:
+        return "Не удалось определить кодировку CSV-файла — возможно, файл повреждён"
+    if "pdf" in lowered:
+        return "Не удалось прочитать PDF — возможно, файл повреждён или не содержит таблиц"
+    return "Не удалось прочитать файл — проверьте формат и попробуйте снова"
+
+
 def _load_or_404(redis_conn: Redis, session_id: str) -> SessionEnvelope:
     try:
         return load_session(redis_conn, session_id)
@@ -230,7 +276,7 @@ async def upload_file(file: UploadFile = File(...), redis_conn: Redis = Depends(
             parsed = parse_file_raw(tmp_path)
         except UnsupportedFileError as exc:
             os.unlink(tmp_path)
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+            raise HTTPException(status_code=400, detail=_translate_unsupported_file_error(str(exc))) from exc
 
     os.unlink(tmp_path)
 
@@ -248,6 +294,177 @@ async def upload_file(file: UploadFile = File(...), redis_conn: Redis = Depends(
         "preview_rows": preview_rows,
         "detected_encoding": parsed.detected_encoding,
         "detected_delimiter": parsed.detected_delimiter,
+    }
+
+
+MAX_BATCH_SOURCES = 20
+
+
+def _parse_one_batch_file(filename: str, tmp_path: str, suffix: str) -> list[BatchSource]:
+    """Turns one uploaded file into one or more BatchSource entries: one
+    per sheet for a multi-sheet Excel workbook ("объединение листов",
+    каталог услуг п.5 — reuses the exact same multi-source mechanism п.2
+    needs for multiple separate files, rather than a parallel ad-hoc code
+    path — see backend/consolidate.py's module docstring), or a single
+    entry for anything else (CSV/PDF/single-sheet Excel), matching how a
+    plain POST /api/upload handles one file today."""
+    try:
+        sheet_names = list_excel_sheets(tmp_path)
+    except Exception:
+        sheet_names = None
+
+    if sheet_names and len(sheet_names) > 1:
+        sources = []
+        for sheet in sheet_names:
+            parsed = None
+            if suffix in HIERARCHICAL_SUFFIXES:
+                try:
+                    parsed = detect_and_unflatten(tmp_path, sheet_name=sheet)
+                except Exception:
+                    parsed = None
+            if parsed is None:
+                try:
+                    parsed = parse_file_raw(tmp_path, sheet_name=sheet)
+                except UnsupportedFileError as exc:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"«{filename}», лист «{sheet}»: {_translate_unsupported_file_error(str(exc))}",
+                    ) from exc
+            sources.append(BatchSource(filename=f"{filename} — {sheet}", raw_df=parsed.df))
+        return sources
+
+    parsed = None
+    if suffix in HIERARCHICAL_SUFFIXES:
+        try:
+            parsed = detect_and_unflatten(tmp_path)
+        except Exception:
+            parsed = None
+    if parsed is None:
+        try:
+            parsed = parse_file_raw(tmp_path)
+        except UnsupportedFileError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"«{filename}»: {_translate_unsupported_file_error(str(exc))}",
+            ) from exc
+    return [BatchSource(filename=filename or "файл", raw_df=parsed.df)]
+
+
+@app.post("/api/upload/batch")
+async def upload_batch(
+    files: list[UploadFile] = File(...),
+    batch_store: UploadBatchStore = Depends(get_batch_store),
+):
+    """First step of consolidating several sources ("несколько
+    источников" / "объединение листов", каталог услуг пп. 2 и 5) into one
+    dataset before the main pipeline's column-role picker ever runs — see
+    backend/consolidate.py's module docstring for the full design.
+
+    Parses every uploaded file the same way POST /api/upload does (same
+    hierarchical-report opportunistic detection, same raw/header-agnostic
+    shape), but does NOT create a Session yet — a Session needs ONE
+    resolved header_row_index, and each source here can have its header on
+    a different row, so that choice happens per source on the review
+    screen this response feeds, not here. A multi-sheet Excel file expands
+    into one source PER SHEET automatically (see _parse_one_batch_file).
+    """
+    if not files:
+        raise HTTPException(status_code=400, detail="Нужно выбрать хотя бы один файл")
+
+    batch_sources: list[BatchSource] = []
+    for upload in files:
+        suffix = Path(upload.filename or "").suffix.lower()
+        contents = await upload.read()
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(contents)
+            tmp_path = tmp.name
+        try:
+            batch_sources.extend(_parse_one_batch_file(upload.filename or "файл", tmp_path, suffix))
+        finally:
+            os.unlink(tmp_path)
+
+    if len(batch_sources) > MAX_BATCH_SOURCES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Слишком много источников за один раз ({len(batch_sources)}) — максимум {MAX_BATCH_SOURCES}",
+        )
+
+    batch_id = batch_store.create(batch_sources)
+
+    sources_payload = [
+        {
+            "index": i,
+            "filename": source.filename,
+            "columns_count": source.raw_df.width,
+            "row_count": source.raw_df.height,
+            "preview_rows": [list(row) for row in source.raw_df.head(PREVIEW_ROW_LIMIT).rows()],
+        }
+        for i, source in enumerate(batch_sources)
+    ]
+
+    return {"batch_id": batch_id, "sources": sources_payload}
+
+
+@app.post("/api/upload/batch/{batch_id}/consolidate")
+def consolidate_batch(
+    batch_id: str,
+    body: ConsolidateRequest,
+    redis_conn: Redis = Depends(get_redis),
+    batch_store: UploadBatchStore = Depends(get_batch_store),
+):
+    """Second step: the user has picked each kept source's header row and
+    (optionally) renamed its label, and possibly dropped some sources —
+    body.sources references batch entries BY INDEX, so a dropped source is
+    simply absent, not padded with a placeholder. On success, returns the
+    exact same response shape as POST /api/upload (session_id +
+    preview_rows of a RAW, header-agnostic grid — see
+    backend/consolidate.py) so upload.html's existing column-role-picker
+    screen takes over completely unchanged."""
+    try:
+        batch_sources = batch_store.get(batch_id)
+    except BatchNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="Загрузка источников не найдена или устарела — загрузите файлы заново",
+        ) from exc
+
+    if not body.sources:
+        raise HTTPException(status_code=400, detail="Нужно оставить хотя бы один источник")
+
+    specs: list[SourceSpec] = []
+    for choice in body.sources:
+        if not (0 <= choice.index < len(batch_sources)):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Источник с индексом {choice.index} не найден в этой загрузке",
+            )
+        batch_source = batch_sources[choice.index]
+        label = (choice.label or batch_source.filename).strip() or batch_source.filename
+        specs.append(SourceSpec(raw_df=batch_source.raw_df, header_row_index=choice.header_row_index, label=label))
+
+    try:
+        raw_like = consolidate_sources(specs)
+    except ConsolidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    batch_store.delete(batch_id)
+
+    session_id = str(uuid.uuid4())
+    session = Session(df=raw_like)
+    save_session(redis_conn, session_id, session, finalized=False, header_row_index=None)
+
+    preview_rows = [list(row) for row in raw_like.head(PREVIEW_ROW_LIMIT).rows()]
+    labels = [spec.label for spec in specs]
+    display_name = labels[0] if len(labels) == 1 else f"{len(labels)} источников: {', '.join(labels)}"
+
+    return {
+        "session_id": session_id,
+        "filename": display_name,
+        "columns_count": raw_like.width,
+        "row_count": raw_like.height,
+        "preview_rows": preview_rows,
+        "detected_encoding": None,
+        "detected_delimiter": None,
     }
 
 

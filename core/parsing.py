@@ -99,7 +99,31 @@ def parse_file(path: str | Path) -> ParsedFile:
     raise UnsupportedFileError(f"Unsupported file extension: {suffix!r}")
 
 
-def parse_file_raw(path: str | Path) -> ParsedFile:
+def list_excel_sheets(path: str | Path) -> list[str] | None:
+    """Returns the sheet names of an Excel-family file, or None for a
+    format with no sheet concept (CSV/PDF) — used by the multi-source
+    consolidation feature (backend/consolidate.py) to decide whether an
+    uploaded file needs to be expanded into one source PER SHEET
+    ("объединение листов", каталог услуг п.5) before the user ever sees
+    it, reusing the exact same multi-source mechanism п.2 already needs
+    for multiple separate files, rather than a parallel ad-hoc code path.
+
+    Uses python_calamine directly (not pl.read_excel, which has no
+    "just list the sheets, don't read any data" mode) — the same engine
+    Polars' own read_excel(engine="calamine") already wraps, so this
+    doesn't introduce a new dependency.
+    """
+    path = Path(path)
+    if path.suffix.lower() not in EXCEL_SUFFIXES:
+        return None
+
+    import python_calamine
+
+    workbook = python_calamine.CalamineWorkbook.from_path(str(path))
+    return list(workbook.sheet_names)
+
+
+def parse_file_raw(path: str | Path, sheet_name: str | None = None) -> ParsedFile:
     """Reads a file with NO assumption about where the header row is —
     every row, including whatever would normally become the column header,
     comes back as plain data with generic column names ("column_1",
@@ -118,12 +142,22 @@ def parse_file_raw(path: str | Path) -> ParsedFile:
     /columns step), the caller slices this raw DataFrame at that index
     and promotes that row's cell values to real column names — see
     backend/main.py.
+
+    sheet_name picks a specific sheet of an Excel-family file (see
+    list_excel_sheets above) — ignored for CSV/PDF, which have no sheet
+    concept, so a caller never needs to special-case those formats.
     """
     path = Path(path)
     suffix = path.suffix.lower()
 
     if suffix in EXCEL_SUFFIXES:
-        df = pl.read_excel(path, has_header=False, drop_empty_rows=False, drop_empty_cols=False)
+        df = pl.read_excel(
+            path,
+            sheet_name=sheet_name,
+            has_header=False,
+            drop_empty_rows=False,
+            drop_empty_cols=False,
+        )
         return ParsedFile(df=df, detected_encoding=None, detected_delimiter=None)
 
     if suffix in CSV_SUFFIXES:

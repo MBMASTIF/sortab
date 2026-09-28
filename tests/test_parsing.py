@@ -5,8 +5,15 @@ identified as the real risk for our target audience."""
 
 import polars as pl
 import pytest
+import xlsxwriter
 
-from core.parsing import UnsupportedFileError, normalize_decimal_comma, parse_file, parse_file_raw
+from core.parsing import (
+    UnsupportedFileError,
+    list_excel_sheets,
+    normalize_decimal_comma,
+    parse_file,
+    parse_file_raw,
+)
 
 
 @pytest.fixture
@@ -110,3 +117,43 @@ def test_raw_unsupported_extension_raises():
     # test_parsing_pdf.py) — .docx is still genuinely unsupported.
     with pytest.raises(UnsupportedFileError):
         parse_file_raw("report.docx")
+
+
+def _build_two_sheet_workbook(path):
+    """Built with xlsxwriter (not openpyxl.Workbook()) — same reasoning as
+    tests/test_hierarchical.py: a real dependency already used by
+    core/export.py, gives predictable, real multi-sheet output."""
+    wb = xlsxwriter.Workbook(str(path))
+    ws1 = wb.add_worksheet("Июнь")
+    for row_idx, row in enumerate([["Товар", "Сумма"], ["Носки", 100], ["Шапка", 250]]):
+        ws1.write_row(row_idx, 0, row)
+    ws2 = wb.add_worksheet("Июль")
+    for row_idx, row in enumerate([["Товар", "Сумма"], ["Носки", 150], ["Шарф", 300]]):
+        ws2.write_row(row_idx, 0, row)
+    wb.close()
+
+
+def test_list_excel_sheets_returns_names_in_order(tmp_path):
+    path = tmp_path / "multi_sheet.xlsx"
+    _build_two_sheet_workbook(path)
+    assert list_excel_sheets(path) == ["Июнь", "Июль"]
+
+
+def test_list_excel_sheets_none_for_csv(cp1251_semicolon_csv):
+    assert list_excel_sheets(cp1251_semicolon_csv) is None
+
+
+def test_parse_file_raw_sheet_name_picks_the_right_sheet(tmp_path):
+    path = tmp_path / "multi_sheet.xlsx"
+    _build_two_sheet_workbook(path)
+
+    june = parse_file_raw(path, sheet_name="Июнь")
+    july = parse_file_raw(path, sheet_name="Июль")
+
+    # The "Сумма" column's raw dtype ends up String, not numeric — the
+    # header text ("Сумма") sits in the same physical column as the
+    # numbers, and Polars needs one dtype per column (same behavior
+    # test_xlsx_raw_exposes_decorative_row_before_real_header above
+    # already documents for a single-sheet file).
+    assert june.df.rows() == [("Товар", "Сумма"), ("Носки", "100"), ("Шапка", "250")]
+    assert july.df.rows() == [("Товар", "Сумма"), ("Носки", "150"), ("Шарф", "300")]

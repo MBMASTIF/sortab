@@ -121,7 +121,7 @@ class _CellInfo:
     indent: int
 
 
-def detect_and_unflatten(path: str | Path) -> ParsedFile | None:
+def detect_and_unflatten(path: str | Path, sheet_name: str | None = None) -> ParsedFile | None:
     """Returns a ParsedFile shaped EXACTLY like core.parsing.parse_file_raw()
     already returns for a normal Excel file (generic "column_N" schema
     names, real header text sitting in row 0 of the DATA) — so the rest of
@@ -131,12 +131,18 @@ def detect_and_unflatten(path: str | Path) -> ParsedFile | None:
     None, everything downstream already works. Returns None whenever the
     file isn't confidently this exact hierarchical shape — see module
     docstring.
+
+    sheet_name picks a specific sheet instead of the workbook's active one
+    — used when the multi-source consolidation flow (backend/consolidate.py)
+    expands a multi-sheet upload into one source per sheet and tries this
+    detector on each sheet independently, same as a normal single-sheet
+    upload would.
     """
     import os
 
     wb, tmp_fixed_path = _open_workbook_robust(path)
     try:
-        ws = wb.active
+        ws = wb[sheet_name] if sheet_name is not None else wb.active
         rows = list(ws.iter_rows())
         width = ws.max_column or 0
     finally:
