@@ -639,7 +639,14 @@
     serverGroups.forEach(g => { state.groups[g.id] = { id: g.id, name: g.name, parentId: g.parent_id }; });
     state.entities = entities;
     state.latestSummary = summary;
-    const unassignedSet = new Set(summary.unassigned_entities);
+    // unassigned_entities now lives per-metric (GET /summary/{column}
+    // returns one result PER metric — see backend/main.py::get_summary),
+    // but which ENTITIES are unassigned depends only on this tree's own
+    // assignment, not on which metric is being summed — identical across
+    // every metric of the same column. Any one of them is a correct
+    // source for this set; the first is as good as any other.
+    const firstMetricSummary = summary.metrics[metricColumns[0]];
+    const unassignedSet = new Set(firstMetricSummary ? firstMetricSummary.unassigned_entities : []);
     entities.forEach(e => {
       if (!unassignedSet.has(e.value)) state.assignedGroup.set(e.value, '__unknown__');
     });
