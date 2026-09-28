@@ -51,8 +51,13 @@ projects = sa.Table(
     # one independent category tree — see categorized_columns below for
     # the full list, in the same tab order the session used.
     sa.Column("entity_column", sa.String(255), nullable=False),
+    # metric_column (singular) is kept = metric_columns[0] for the exact
+    # same back-compat-display reason as entity_column above, now that a
+    # session/Project can have more than one independent sum column — see
+    # metric_columns below for the full list.
     sa.Column("metric_column", sa.String(255), nullable=False),
     sa.Column("categorized_columns", _JSON_VARIANT, nullable=False),
+    sa.Column("metric_columns", _JSON_VARIANT, nullable=True),
     # {column_name: {"groups": [...], "assignment": {...}}} — one
     # tree_serialization.tree_to_dict() blob per categorized column,
     # keyed by column name (was a single tree's dict before this phase).

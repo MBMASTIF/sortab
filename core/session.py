@@ -6,11 +6,22 @@ spinning up a server.
 **Multiple independent category trees.** A session can categorize more than
 one column at once (e.g. "Товар" AND "Клиент" in the same uploaded report),
 each with its OWN independent core.tree.TreeStore — own groups, own
-leaf-only assignment, own reconciliation. `metric_column` is singular: it's
-the same money column looked at through however many different trees the
-user builds. Columns the user does NOT want to categorize but still wants
-to see as raw context (no tree, just passed through — e.g. "Менеджер" as a
-breakdown axis) are `dimension_columns`, unrelated to categorization.
+leaf-only assignment, own reconciliation. Columns the user does NOT want to
+categorize but still wants to see as raw context (no tree, just passed
+through — e.g. "Менеджер" as a breakdown axis) are `dimension_columns`,
+unrelated to categorization.
+
+**Multiple independent sum columns.** `metric_columns` is a list, not a
+single column — the user can pick more than one numeric column as a "sum"
+at once (e.g. both "Стоимость" in rubles AND "Вес" in kg on the same
+report). Every tree is reconciled against EVERY metric independently: the
+same reused, unmodified `core.reconcile.rollup()` is called once per
+(categorized column, metric column) pair — exactly the same "call the
+untouched single-X engine N times" pattern this module already established
+for multiple trees, just crossed with a second axis. Nothing about
+`rollup()`, `TreeStore`, or a single tree's own bookkeeping changes because
+there's more than one metric; `rows_for_rollup()`/`current_summary()` below
+just take which metric to build `Row.value` from.
 
 core.tree.TreeStore and core.reconcile.rollup() are reused completely
 unmodified here — a categorized column just gets its own TreeStore
@@ -43,7 +54,7 @@ class EntityInfo:
 class Session:
     df: pl.DataFrame
     categorized_columns: list[str] = field(default_factory=list)
-    metric_column: str | None = None
+    metric_columns: list[str] = field(default_factory=list)
     dimension_columns: list[str] = field(default_factory=list)
     # One independent TreeStore per categorized column, keyed by column name.
     trees: dict[str, TreeStore] = field(default_factory=dict)
@@ -55,23 +66,26 @@ class Session:
     def set_columns(
         self,
         categorized_columns: list[str],
-        metric_column: str,
+        metric_columns: list[str],
         dimension_columns: list[str] | None = None,
     ) -> None:
         if not categorized_columns:
             raise SessionError("At least one column must be chosen to categorize")
+        if not metric_columns:
+            raise SessionError("At least one column must be chosen as a sum")
         for col in categorized_columns:
             if col not in self.df.columns:
                 raise SessionError(f"Column {col!r} not found in file")
-        if metric_column not in self.df.columns:
-            raise SessionError(f"Column {metric_column!r} not found in file")
+        for col in metric_columns:
+            if col not in self.df.columns:
+                raise SessionError(f"Column {col!r} not found in file")
 
         dims = list(dimension_columns or [])
         for col in dims:
             if col not in self.df.columns:
                 raise SessionError(f"Column {col!r} not found in file")
 
-        all_used = [*categorized_columns, metric_column, *dims]
+        all_used = [*categorized_columns, *metric_columns, *dims]
         if len(set(all_used)) != len(all_used):
             raise SessionError(
                 "A column can't be used in more than one role at once "
@@ -79,7 +93,7 @@ class Session:
             )
 
         self.categorized_columns = categorized_columns
-        self.metric_column = metric_column
+        self.metric_columns = metric_columns
         self.dimension_columns = dims
 
         for col in categorized_columns:
@@ -89,8 +103,12 @@ class Session:
         }
 
     def _require_columns_set(self) -> None:
-        if not self.categorized_columns or self.metric_column is None:
+        if not self.categorized_columns or not self.metric_columns:
             raise SessionError("Columns must be set (call set_columns) before this operation")
+
+    def _require_metric_column(self, metric_column: str) -> None:
+        if metric_column not in self.metric_columns:
+            raise SessionError(f"Column {metric_column!r} is not one of this session's sum columns")
 
     def _require_categorized_column(self, column: str) -> None:
         if column not in self.categorized_columns:
@@ -128,19 +146,22 @@ class Session:
             tree.assign_entity(entity, group_id)
         self._previously_known_entities.setdefault(column, set()).update(entities)
 
-    def rows_for_rollup(self, column: str) -> list[Row]:
+    def rows_for_rollup(self, column: str, metric_column: str) -> list[Row]:
         self._require_columns_set()
         self._require_categorized_column(column)
+        self._require_metric_column(metric_column)
         return [
-            Row(entity=r[column], value=Decimal(str(r[self.metric_column])))
+            Row(entity=r[column], value=Decimal(str(r[metric_column])))
             for r in self.df.iter_rows(named=True)
         ]
 
-    def current_summary(self, column: str) -> RollupResult:
-        """Independent reconciliation for ONE tree: rollup() is called
-        with THIS column's own assignment/groups against the full row set
-        — "Итого = По группам + Не распределено" holds for every
-        categorized column on its own, regardless of how many other trees
-        exist in this session."""
+    def current_summary(self, column: str, metric_column: str) -> RollupResult:
+        """Independent reconciliation for ONE (tree, metric) pair:
+        rollup() is called with THIS column's own assignment/groups, using
+        ONLY this one metric's values, against the full row set — "Итого =
+        По группам + Не распределено" holds for every categorized column,
+        for every metric, independently — a session with 2 trees and 2
+        metrics reconciles as 4 completely separate calls into the same
+        unmodified rollup(), never mixed."""
         tree = self.tree_for(column)
-        return rollup(self.rows_for_rollup(column), tree.assignment, tree.as_group_list())
+        return rollup(self.rows_for_rollup(column, metric_column), tree.assignment, tree.as_group_list())

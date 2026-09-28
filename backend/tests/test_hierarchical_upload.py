@@ -109,7 +109,7 @@ def test_upload_auto_unflattens_hierarchical_report_with_real_column_names(clien
         json={
             "header_row_index": 0,
             "categorized_columns": [0, 1, 2, 3],  # Менеджер, Клиент, Точка, Товар — 4 independent trees
-            "metric_column": 4,  # Стоимость
+            "metric_columns": [4],  # Стоимость
             "dimension_columns": [],
         },
     )
@@ -118,7 +118,7 @@ def test_upload_auto_unflattens_hierarchical_report_with_real_column_names(clien
     assert cols_body["categorized_columns"] == [
         "Торговый агент", "Контрагент", "Торговая точка", "Номенклатура",
     ]
-    assert cols_body["metric_column"] == "Стоимость"
+    assert cols_body["metric_columns"] == ["Стоимость"]
     assert cols_body["row_count"] == 4
 
     entities_response = client.get(f"/api/session/{session_id}/entities/Торговый агент")
@@ -132,6 +132,6 @@ def test_upload_auto_unflattens_hierarchical_report_with_real_column_names(clien
     # carry the correct per-row Стоимость through to the real pipeline.
     summary_response = client.get(f"/api/session/{session_id}/summary/Номенклатура")
     assert summary_response.status_code == 200
-    summary = summary_response.json()
+    summary = summary_response.json()["metrics"]["Стоимость"]
     assert Decimal(summary["unassigned_total"]) == Decimal("750.75")
     assert Decimal(summary["grand_total"]) == Decimal("750.75")

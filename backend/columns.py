@@ -88,38 +88,44 @@ def finalize_pipeline_columns(
     raw_df: pl.DataFrame,
     header_row_index: int,
     categorized_col_idx: list[int],
-    metric_col_idx: int,
+    metric_col_idx: list[int],
     dimension_col_idx: list[int] | None = None,
-) -> tuple[pl.DataFrame, list[str], str, list[str]]:
+) -> tuple[pl.DataFrame, list[str], list[str], list[str]]:
     """The main pipeline's column-mapping step: promotes the header row,
     resolves an arbitrary number of "categorize this" columns (each gets
-    its own independent core.tree.TreeStore — see core/session.py), one
-    metric column, and an arbitrary number of "разбивка" (raw context, no
-    tree) columns, then normalizes the money column exactly like
-    finalize_columns() does.
+    its own independent core.tree.TreeStore — see core/session.py), an
+    arbitrary number of "sum" (metric) columns — e.g. both "Стоимость" and
+    "Вес" reconciled independently, see core/session.py's own docstring —
+    and an arbitrary number of "разбивка" (raw context, no tree) columns,
+    then normalizes every money column exactly like finalize_columns()
+    does for its one.
 
     Kept SEPARATE from finalize_columns() (below), which stays exactly as
     it was: the Compare Инструмент (core/compare.py via
     backend/main.py::_run_compare) only ever needs ONE entity + ONE metric
     column per file and has nothing to do with category trees — reusing
-    (or worse, mutating) finalize_columns()'s single-entity contract for
-    this multi-column case would either break Compare or force an
-    unnatural 3-role encoding onto a function that was never about that.
+    (or worse, mutating) finalize_columns()'s single-entity/single-metric
+    contract for this multi-column case would either break Compare or
+    force an unnatural role encoding onto a function that was never about
+    that.
 
-    Rows are dropped when the METRIC value is null after normalization
-    (typically a blank trailing row after the real data) — this is
-    column-agnostic to however many categorized columns exist, unlike the
-    single-entity-column null-check finalize_columns() uses, which doesn't
-    generalize once there can be more than one categorized column.
+    Rows are dropped only when EVERY metric value is null after
+    normalization (typically a blank trailing row after the real data) —
+    NOT when any single metric is null, since a real report can
+    legitimately have one metric filled in and another blank on the same
+    row (e.g. "Вес" not tracked for every item) without that row being
+    garbage.
     """
     data_df, new_columns = promote_header_row(raw_df, header_row_index)
     ncols = len(new_columns)
 
     if not categorized_col_idx:
         raise ColumnMappingError("At least one column must be chosen to categorize")
+    if not metric_col_idx:
+        raise ColumnMappingError("At least one column must be chosen as a sum")
 
     dims = dimension_col_idx or []
-    all_idx = [*categorized_col_idx, metric_col_idx, *dims]
+    all_idx = [*categorized_col_idx, *metric_col_idx, *dims]
     for idx in all_idx:
         if not (0 <= idx < ncols):
             raise ColumnMappingError(f"column index {idx} is out of range (0..{ncols - 1})")
@@ -129,16 +135,18 @@ def finalize_pipeline_columns(
         )
 
     categorized_names = [new_columns[i] for i in categorized_col_idx]
-    metric_name = new_columns[metric_col_idx]
+    metric_names = [new_columns[i] for i in metric_col_idx]
     dimension_names = [new_columns[i] for i in dims]
 
-    if data_df[metric_name].dtype == pl.Utf8:
-        normalized = normalize_decimal_comma(data_df, metric_name)
-        data_df = data_df.with_columns(normalized.alias(metric_name))
+    for metric_name in metric_names:
+        if data_df[metric_name].dtype == pl.Utf8:
+            normalized = normalize_decimal_comma(data_df, metric_name)
+            data_df = data_df.with_columns(normalized.alias(metric_name))
 
-    data_df = data_df.filter(pl.col(metric_name).is_not_null())
+    all_metrics_null = pl.all_horizontal([pl.col(m).is_null() for m in metric_names])
+    data_df = data_df.filter(~all_metrics_null)
 
-    return data_df, categorized_names, metric_name, dimension_names
+    return data_df, categorized_names, metric_names, dimension_names
 
 
 def finalize_columns(

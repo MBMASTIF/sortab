@@ -58,7 +58,7 @@ def create_project(
     user_id: str,
     name: str,
     categorized_columns: list[str],
-    metric_column: str,
+    metric_columns: list[str],
     trees: dict[str, TreeStore],
 ) -> dict:
     if count_projects(engine, user_id) >= FREE_TIER_PROJECT_LIMIT:
@@ -76,8 +76,9 @@ def create_project(
                 user_id=user_id,
                 name=name,
                 entity_column=categorized_columns[0],
-                metric_column=metric_column,
+                metric_column=metric_columns[0],
                 categorized_columns=categorized_columns,
+                metric_columns=metric_columns,
                 tree_json=tree_json,
                 created_at=now,
                 updated_at=now,
@@ -133,11 +134,17 @@ def _row_to_summary(row) -> dict:
     # doesn't need a per-column breakdown to decide whether a project
     # "has a dictionary worth reusing".
     groups_count = sum(len(tree.get("groups", [])) for tree in row["tree_json"].values())
+    # metric_columns can be NULL on a row saved before this phase (the
+    # live table gets an additive ALTER TABLE, not a backfill — see
+    # README) — fall back to the single legacy metric_column so an old
+    # Project still reports a sane (1-element) list, never crashes.
+    metric_columns = row["metric_columns"] if row["metric_columns"] else [row["metric_column"]]
     return {
         "id": row["id"],
         "name": row["name"],
         "entity_column": row["entity_column"],
         "metric_column": row["metric_column"],
+        "metric_columns": metric_columns,
         "categorized_columns": row["categorized_columns"],
         "groups_count": groups_count,
         "created_at": row["created_at"].isoformat(),

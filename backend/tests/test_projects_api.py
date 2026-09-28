@@ -60,7 +60,7 @@ def _xlsx_bytes(rows: list[list[str]]) -> bytes:
 
 def _upload_and_finalize(client, rows: list[list[str]]) -> str:
     """rows[0] is the header — uploads, then immediately picks
-    header_row_index=0, categorized_columns=[0] (Товар), metric_column=1."""
+    header_row_index=0, categorized_columns=[0] (Товар), metric_columns=[1]."""
     resp = client.post(
         "/api/upload",
         files={"file": ("report.xlsx", _xlsx_bytes(rows), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
@@ -70,7 +70,7 @@ def _upload_and_finalize(client, rows: list[list[str]]) -> str:
 
     columns_resp = client.post(
         f"/api/session/{session_id}/columns",
-        json={"header_row_index": 0, "categorized_columns": [0], "metric_column": 1},
+        json={"header_row_index": 0, "categorized_columns": [0], "metric_columns": [1]},
     )
     assert columns_resp.status_code == 200, columns_resp.text
     return session_id
@@ -203,7 +203,7 @@ def test_full_project_lifecycle_and_reupload_reuses_dictionary(client):
 
     # --- known entities are already assigned to their old groups; the
     # reconciliation math already reflects that, no manual re-sort needed
-    summary = client.get(f"/api/session/{new_session_id}/summary/Товар").json()
+    summary = client.get(f"/api/session/{new_session_id}/summary/Товар").json()["metrics"]["Сумма"]
     assert Decimal(summary["rollup_totals"]["shoes"]) == Decimal("31000")
     assert Decimal(summary["rollup_totals"]["socks"]) == Decimal("5000")
     assert sorted(summary["unassigned_entities"]) == ["трусы муж.", "шапка вязаная"]
@@ -253,7 +253,7 @@ def test_project_with_two_independent_trees_round_trips_both(client):
     session_id = resp.json()["session_id"]
     columns_resp = client.post(
         f"/api/session/{session_id}/columns",
-        json={"header_row_index": 0, "categorized_columns": [0, 1], "metric_column": 2},
+        json={"header_row_index": 0, "categorized_columns": [0, 1], "metric_columns": [2]},
     )
     assert columns_resp.status_code == 200, columns_resp.text
 
@@ -291,7 +291,7 @@ def test_project_with_two_independent_trees_round_trips_both(client):
     session_b = resp_b.json()["session_id"]
     client.post(
         f"/api/session/{session_b}/columns",
-        json={"header_row_index": 0, "categorized_columns": [0, 1], "metric_column": 2},
+        json={"header_row_index": 0, "categorized_columns": [0, 1], "metric_columns": [2]},
     )
 
     load_resp = client.post(f"/api/session/{session_b}/load-project/{project_id}")
@@ -301,10 +301,10 @@ def test_project_with_two_independent_trees_round_trips_both(client):
     assert columns_result["Товар"]["new_entities"] == ["новый товар"]
     assert columns_result["Клиент"]["new_entities"] == ["Новый клиент"]
 
-    tovar_summary = client.get(f"/api/session/{session_b}/summary/Товар").json()
+    tovar_summary = client.get(f"/api/session/{session_b}/summary/Товар").json()["metrics"]["Сумма"]
     assert Decimal(tovar_summary["rollup_totals"]["socks"]) == Decimal("5000") + Decimal("31000")
     assert tovar_summary["unassigned_entities"] == ["новый товар"]
 
-    client_summary = client.get(f"/api/session/{session_b}/summary/Клиент").json()
+    client_summary = client.get(f"/api/session/{session_b}/summary/Клиент").json()["metrics"]["Сумма"]
     assert Decimal(client_summary["rollup_totals"]["big"]) == Decimal("5000") + Decimal("31000")
     assert client_summary["unassigned_entities"] == ["Новый клиент"]

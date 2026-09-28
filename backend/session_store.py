@@ -93,7 +93,7 @@ def save_session(
         "finalized": finalized,
         "header_row_index": header_row_index,
         "categorized_columns": session.categorized_columns,
-        "metric_column": session.metric_column,
+        "metric_columns": session.metric_columns,
         "dimension_columns": session.dimension_columns,
         "trees": {
             column: {
@@ -138,10 +138,18 @@ def load_session(redis_conn: Redis, session_id: str) -> SessionEnvelope:
         }
         trees[column] = tree
 
+    # "metric_column" (singular) fallback: a session saved to Redis before
+    # this phase (24h TTL, so this only matters for a brief overlap window
+    # around deploy — see README) still has the old single-column key.
+    metric_columns = meta.get("metric_columns")
+    if metric_columns is None:
+        legacy = meta.get("metric_column")
+        metric_columns = [legacy] if legacy else []
+
     session = Session(
         df=df,
         categorized_columns=meta["categorized_columns"],
-        metric_column=meta["metric_column"],
+        metric_columns=metric_columns,
         dimension_columns=meta.get("dimension_columns", []),
         trees=trees,
     )

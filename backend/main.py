@@ -73,6 +73,7 @@ from core.export import (
 from core.mailmerge import MailMergeError, build_row_dicts, render_pdf as render_mailmerge_pdf, render_text, validate_template
 from core.parsing import UnsupportedFileError, parse_file_raw
 from core.pdf_split import SplitError, split_by_marker
+from core.reconcile import RollupResult
 from core.session import Session, SessionError
 from core.tree import GroupNotEmptyError, NotALeafError, TreeError, TreeStore
 from core.unpivot import UnpivotError, unpivot_table
@@ -127,10 +128,12 @@ class ColumnsRequest(BaseModel):
     # core/session.py — a session can categorize several columns at once,
     # e.g. "Товар" AND "Клиент" in the same report, each with its own tree).
     categorized_columns: list[int]
-    metric_column: int
+    # One or more numeric "sum" columns — e.g. both "Стоимость" and "Вес"
+    # at once, each reconciled independently (see core/session.py).
+    metric_columns: list[int]
     # Raw "разбивка" columns — no tree, just carried through as context
     # (e.g. "Менеджер"). Optional, any number, never overlaps with
-    # categorized_columns or metric_column.
+    # categorized_columns or metric_columns.
     dimension_columns: list[int] = []
 
 
@@ -254,8 +257,8 @@ def set_columns(session_id: str, body: ColumnsRequest, redis_conn: Redis = Depen
     raw_df = envelope.session.df
 
     try:
-        data_df, categorized_names, metric_name, dimension_names = finalize_pipeline_columns(
-            raw_df, body.header_row_index, body.categorized_columns, body.metric_column, body.dimension_columns
+        data_df, categorized_names, metric_names, dimension_names = finalize_pipeline_columns(
+            raw_df, body.header_row_index, body.categorized_columns, body.metric_columns, body.dimension_columns
         )
     except ColumnMappingError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -268,7 +271,7 @@ def set_columns(session_id: str, body: ColumnsRequest, redis_conn: Redis = Depen
     session.trees = {col: envelope.session.trees.get(col, TreeStore()) for col in categorized_names}
     session._previously_known_entities = dict(envelope.session._previously_known_entities)
     try:
-        session.set_columns(categorized_names, metric_name, dimension_names)
+        session.set_columns(categorized_names, metric_names, dimension_names)
     except SessionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -276,7 +279,7 @@ def set_columns(session_id: str, body: ColumnsRequest, redis_conn: Redis = Depen
 
     return {
         "categorized_columns": categorized_names,
-        "metric_column": metric_name,
+        "metric_columns": metric_names,
         "dimension_columns": dimension_names,
         "row_count": data_df.height,
     }
@@ -292,7 +295,7 @@ def get_columns(session_id: str, redis_conn: Redis = Depends(get_redis)):
     _require_finalized(envelope)
     return {
         "categorized_columns": envelope.session.categorized_columns,
-        "metric_column": envelope.session.metric_column,
+        "metric_columns": envelope.session.metric_columns,
         "dimension_columns": envelope.session.dimension_columns,
     }
 
@@ -387,23 +390,8 @@ def assign_entities(session_id: str, column: str, body: AssignRequest, redis_con
     return {"assigned": len(body.entity_ids), "group_id": body.group_id, "column": column}
 
 
-@app.get("/api/session/{session_id}/summary/{column}")
-def get_summary(session_id: str, column: str, redis_conn: Redis = Depends(get_redis)):
-    """Reconciliation for ONE tree — "Итого = По группам + Не
-    распределено" holds independently per categorized column, since each
-    tree partitions the SAME rows differently (see core/session.py::
-    current_summary and its docstring)."""
-    envelope = _load_or_404(redis_conn, session_id)
-    _require_finalized(envelope)
-
-    try:
-        result = envelope.session.current_summary(column)
-        groups = envelope.session.tree_for(column).as_group_list()
-    except SessionError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-
+def _summary_json(result: RollupResult, groups: list) -> dict:
     return {
-        "column": column,
         "direct_totals": {k: _decimal_str(v) for k, v in result.direct_totals.items()},
         "rollup_totals": {k: _decimal_str(v) for k, v in result.rollup_totals.items()},
         "unassigned_total": _decimal_str(result.unassigned_total),
@@ -417,13 +405,57 @@ def get_summary(session_id: str, column: str, redis_conn: Redis = Depends(get_re
     }
 
 
+@app.get("/api/session/{session_id}/summary/{column}")
+def get_summary(session_id: str, column: str, redis_conn: Redis = Depends(get_redis)):
+    """Reconciliation for ONE tree, across EVERY chosen sum column — "Итого
+    = По группам + Не распределено" holds independently per (categorized
+    column, metric column) pair, since each tree partitions the SAME rows
+    differently and each metric sums a different column of the SAME rows
+    (see core/session.py::current_summary and its docstring). Response
+    shape (decided this phase, see README): one summary PER metric, keyed
+    by metric column name, under "metrics" — e.g.
+    {"metrics": {"Стоимость": {...}, "Вес": {...}}} — rather than N
+    separate HTTP calls, so the frontend can show every sum side by side
+    for one tree/column in a single round trip."""
+    envelope = _load_or_404(redis_conn, session_id)
+    _require_finalized(envelope)
+    session = envelope.session
+
+    try:
+        groups = session.tree_for(column).as_group_list()
+        metrics = {
+            metric: _summary_json(session.current_summary(column, metric), groups)
+            for metric in session.metric_columns
+        }
+    except SessionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return {
+        "column": column,
+        "metric_columns": session.metric_columns,
+        "metrics": metrics,
+    }
+
+
 @app.get("/api/session/{session_id}/breakdown/{column}")
 def get_breakdown(session_id: str, column: str, redis_conn: Redis = Depends(get_redis)):
     """Разбивка: this column's tree's group path crossed with the
     session's raw "разбивка" (dimension) columns — e.g. Менеджер -> Клиент
     -> сумма per Товар category, for the Товар tree specifically. A purely
     additional cut; see core/export.py::build_breakdown_sheet for why this
-    never touches the actual reconciliation math."""
+    never touches the actual reconciliation math.
+
+    With more than one sum column, build_breakdown_sheet() (unmodified,
+    single-metric — see its own docstring) is called once per metric, same
+    "call the untouched single-X function N times" pattern used everywhere
+    else in this project for a second axis of multiplicity. The N
+    single-metric tables always share the exact same group keys (same
+    original_df/tree/assignment), so they're joined into ONE table here —
+    one row per dimension/group combination, one column per metric, named
+    by the bare metric name (e.g. "Стоимость", "Вес": guaranteed not to
+    collide with a dimension/group column name, since set_columns() never
+    lets the same column serve two roles at once) — so the frontend shows
+    every sum side by side without N separate round trips or tables."""
     envelope = _load_or_404(redis_conn, session_id)
     _require_finalized(envelope)
     session = envelope.session
@@ -433,64 +465,94 @@ def get_breakdown(session_id: str, column: str, redis_conn: Redis = Depends(get_
     except SessionError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    breakdown_df = build_breakdown_sheet(
-        session.df,
-        column,
-        session.metric_column,
-        session.dimension_columns,
-        tree.assignment,
-        tree.as_group_list(),
-    )
+    merged: pl.DataFrame | None = None
+    for metric in session.metric_columns:
+        per_metric = build_breakdown_sheet(
+            session.df,
+            column,
+            metric,
+            session.dimension_columns,
+            tree.assignment,
+            tree.as_group_list(),
+        ).rename({"Сумма": metric})
+        if merged is None:
+            merged = per_metric
+        else:
+            join_cols = [c for c in per_metric.columns if c != metric]
+            merged = merged.join(per_metric, on=join_cols, how="left") if join_cols else pl.concat(
+                [merged, per_metric], how="horizontal"
+            )
+
+    rows = merged.to_dicts() if merged is not None else []
     return {
         "column": column,
         "dimension_columns": session.dimension_columns,
-        "rows": breakdown_df.to_dicts(),
+        "metric_columns": session.metric_columns,
+        "rows": rows,
     }
 
 
 @app.get("/api/session/{session_id}/export")
 def export_session(session_id: str, redis_conn: Redis = Depends(get_redis)):
+    """The exported workbook now varies along TWO independent axes —
+    categorized column (tree) and metric column (sum) — not just the one
+    axis (tree) the file shape already supported. Same backward-
+    compatibility rule as before, just extended to the new axis: a session
+    with exactly one tree AND exactly one metric produces the EXACT same
+    2-sheet "Детализация"/"Итоги"(+"Разбивка") file as before this phase
+    (proven by test_export_single_tree_single_metric_unchanged in
+    backend/tests/test_api.py). Every (tree, metric) pair beyond the very
+    first gets its own sheet, named "Итоги"/"Разбивка" plus whichever of
+    "— {column}" / "— {metric}" actually applies — e.g. a 2-tree,
+    1-metric session still says "Итоги — Клиент" exactly as before; a
+    1-tree, 2-metric session says "Итоги — Вес" (no column suffix, since
+    there's only the one tree); a 2-tree, 2-metric session says
+    "Итоги — Клиент — Вес" for the pair that's neither the first tree nor
+    the first metric.
+    """
     envelope = _load_or_404(redis_conn, session_id)
     _require_finalized(envelope)
 
     session = envelope.session
     first_col, *rest_cols = session.categorized_columns
+    first_metric, *rest_metrics = session.metric_columns
 
     detail_df = build_multi_tree_detail_sheet(
         session.df, session.categorized_columns, session.trees, dimension_columns=session.dimension_columns
     )
 
-    first_tree = session.trees[first_col]
-    first_result = session.current_summary(first_col)
-    summary_df = build_summary_sheet(first_result, first_tree.as_group_list())
+    def sheet_suffix(col: str, metric: str) -> str | None:
+        parts = []
+        if col != first_col:
+            parts.append(col)
+        if metric != first_metric:
+            parts.append(metric)
+        return " — ".join(parts) if parts else None
 
+    summary_df: pl.DataFrame | None = None
+    breakdown_df: pl.DataFrame | None = None
     extra_summary_sheets: dict[str, pl.DataFrame] = {}
-    for col in rest_cols:
-        tree = session.trees[col]
-        result = session.current_summary(col)
-        extra_summary_sheets[f"Итоги — {col}"] = build_summary_sheet(result, tree.as_group_list())
-
-    breakdown_df = None
     extra_breakdown_sheets: dict[str, pl.DataFrame] = {}
-    if session.dimension_columns:
-        breakdown_df = build_breakdown_sheet(
-            session.df,
-            first_col,
-            session.metric_column,
-            session.dimension_columns,
-            first_tree.assignment,
-            first_tree.as_group_list(),
-        )
-        for col in rest_cols:
-            tree = session.trees[col]
-            extra_breakdown_sheets[f"Разбивка — {col}"] = build_breakdown_sheet(
-                session.df,
-                col,
-                session.metric_column,
-                session.dimension_columns,
-                tree.assignment,
-                tree.as_group_list(),
-            )
+
+    for col in session.categorized_columns:
+        tree = session.trees[col]
+        for metric in session.metric_columns:
+            result = session.current_summary(col, metric)
+            this_summary = build_summary_sheet(result, tree.as_group_list())
+            this_breakdown = None
+            if session.dimension_columns:
+                this_breakdown = build_breakdown_sheet(
+                    session.df, col, metric, session.dimension_columns, tree.assignment, tree.as_group_list(),
+                )
+
+            suffix = sheet_suffix(col, metric)
+            if suffix is None:
+                summary_df = this_summary
+                breakdown_df = this_breakdown
+            else:
+                extra_summary_sheets[f"Итоги — {suffix}"] = this_summary
+                if this_breakdown is not None:
+                    extra_breakdown_sheets[f"Разбивка — {suffix}"] = this_breakdown
 
     tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
     tmp.close()
@@ -559,7 +621,7 @@ def save_project(
             user_id,
             name,
             session.categorized_columns,
-            session.metric_column,
+            session.metric_columns,
             session.trees,
         )
     except ProjectLimitError as exc:

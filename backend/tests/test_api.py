@@ -98,12 +98,12 @@ def test_full_workflow_reconciles_and_exports_correctly(client):
     # this session gained the ability to categorize more than one column.
     columns_resp = client.post(
         f"/api/session/{session_id}/columns",
-        json={"header_row_index": 1, "categorized_columns": [0], "metric_column": 2},
+        json={"header_row_index": 1, "categorized_columns": [0], "metric_columns": [2]},
     )
     assert columns_resp.status_code == 200, columns_resp.text
     columns_body = columns_resp.json()
     assert columns_body["categorized_columns"] == ["Товар"]
-    assert columns_body["metric_column"] == "Сумма"
+    assert columns_body["metric_columns"] == ["Сумма"]
     assert columns_body["dimension_columns"] == []
     assert columns_body["row_count"] == 5
 
@@ -188,10 +188,15 @@ def test_full_workflow_reconciles_and_exports_correctly(client):
     )
     assert r3.status_code == 200, r3.text
 
-    # --- summary: math must reconcile exactly
+    # --- summary: math must reconcile exactly. Response shape (this
+    # phase, see README/backend/main.py::get_summary): one summary PER
+    # metric under "metrics", keyed by metric column name — this session
+    # has exactly one sum column ("Сумма"), so there's exactly one key.
     summary_resp = client.get(f"/api/session/{session_id}/summary/Товар")
     assert summary_resp.status_code == 200
-    summary = summary_resp.json()
+    summary_body = summary_resp.json()
+    assert summary_body["metric_columns"] == ["Сумма"]
+    summary = summary_body["metrics"]["Сумма"]
 
     assert Decimal(summary["rollup_totals"]["socks"]) == Decimal("7500")  # 4500 + 3000
     assert Decimal(summary["rollup_totals"]["underwear"]) == Decimal("3400")
@@ -300,14 +305,14 @@ def test_two_independent_trees_reconcile_separately_in_the_same_session(client):
         json={
             "header_row_index": 0,
             "categorized_columns": [2, 1],
-            "metric_column": 3,
+            "metric_columns": [3],
             "dimension_columns": [0],
         },
     )
     assert columns_resp.status_code == 200, columns_resp.text
     body = columns_resp.json()
     assert body["categorized_columns"] == ["Товар", "Клиент"]
-    assert body["metric_column"] == "Выручка"
+    assert body["metric_columns"] == ["Выручка"]
     assert body["dimension_columns"] == ["Менеджер"]
 
     file_total = Decimal("4500") + Decimal("3000") + Decimal("32000") + Decimal("8900") + Decimal("3400") + Decimal("1200")
@@ -325,7 +330,7 @@ def test_two_independent_trees_reconcile_separately_in_the_same_session(client):
         json={"entity_ids": ["ботинки зимние", "шапка вязаная", "трусы муж."], "group_id": "other"},
     ).status_code == 200
 
-    tovar_summary = client.get(f"/api/session/{session_id}/summary/Товар").json()
+    tovar_summary = client.get(f"/api/session/{session_id}/summary/Товар").json()["metrics"]["Выручка"]
     # носки чёрные rows: 4500 + 3000 + 1200 = 8700
     assert Decimal(tovar_summary["rollup_totals"]["socks"]) == Decimal("8700")
     assert Decimal(tovar_summary["rollup_totals"]["other"]) == Decimal("32000") + Decimal("8900") + Decimal("3400")
@@ -341,7 +346,7 @@ def test_two_independent_trees_reconcile_separately_in_the_same_session(client):
     ).status_code == 200
     # "ИП Кузнецов" (32000 + 1200 = 33200) deliberately left unassigned
 
-    client_summary = client.get(f"/api/session/{session_id}/summary/Клиент").json()
+    client_summary = client.get(f"/api/session/{session_id}/summary/Клиент").json()["metrics"]["Выручка"]
     assert Decimal(client_summary["rollup_totals"]["big"]) == Decimal("4500") + Decimal("3000") + Decimal("8900") + Decimal("3400")
     assert Decimal(client_summary["unassigned_total"]) == Decimal("32000") + Decimal("1200")
     assert client_summary["unassigned_entities"] == ["ИП Кузнецов"]
@@ -359,7 +364,7 @@ def test_two_independent_trees_reconcile_separately_in_the_same_session(client):
     breakdown_resp = client.get(f"/api/session/{session_id}/breakdown/Товар")
     assert breakdown_resp.status_code == 200
     breakdown_rows = breakdown_resp.json()["rows"]
-    by_key = {(r["Менеджер"], r["Группа 1"]): Decimal(r["Сумма"]) for r in breakdown_rows}
+    by_key = {(r["Менеджер"], r["Группа 1"]): Decimal(r["Выручка"]) for r in breakdown_rows}
     # Смирнова А. носки чёрные (socks): 4500 + 3000 = 7500
     assert by_key[("Смирнова А.", "Носки")] == Decimal("7500")
     # Кузьмин Д. носки чёрные (socks): 1200
@@ -421,7 +426,7 @@ def test_full_workflow_with_pdf_source_reconciles_correctly(client):
 
     columns_resp = client.post(
         f"/api/session/{session_id}/columns",
-        json={"header_row_index": 0, "categorized_columns": [0], "metric_column": 2},
+        json={"header_row_index": 0, "categorized_columns": [0], "metric_columns": [2]},
     )
     assert columns_resp.status_code == 200, columns_resp.text
     assert columns_resp.json()["row_count"] == 12
@@ -446,7 +451,7 @@ def test_full_workflow_with_pdf_source_reconciles_correctly(client):
 
     summary_resp = client.get(f"/api/session/{session_id}/summary/Товар")
     assert summary_resp.status_code == 200
-    summary = summary_resp.json()
+    summary = summary_resp.json()["metrics"]["Сумма"]
     assert Decimal(summary["unassigned_total"]) == Decimal("0")
     assert Decimal(summary["rollup_totals"]["all"]) == Decimal("79390.55")
     assert Decimal(summary["grand_total"]) == Decimal("79390.55")
@@ -464,7 +469,7 @@ def test_assign_to_unknown_group_is_a_client_error_not_a_500(client):
     session_id = upload_body["session_id"]
     client.post(
         f"/api/session/{session_id}/columns",
-        json={"header_row_index": 1, "categorized_columns": [0], "metric_column": 2},
+        json={"header_row_index": 1, "categorized_columns": [0], "metric_columns": [2]},
     )
 
     resp = client.post(
@@ -527,7 +532,7 @@ def test_out_of_range_header_row_index_is_a_400(client):
     session_id = upload_body["session_id"]
     resp = client.post(
         f"/api/session/{session_id}/columns",
-        json={"header_row_index": 999, "categorized_columns": [0], "metric_column": 2},
+        json={"header_row_index": 999, "categorized_columns": [0], "metric_columns": [2]},
     )
     assert resp.status_code == 400
 
@@ -537,7 +542,7 @@ def test_empty_categorized_columns_is_a_400(client):
     session_id = upload_body["session_id"]
     resp = client.post(
         f"/api/session/{session_id}/columns",
-        json={"header_row_index": 1, "categorized_columns": [], "metric_column": 2},
+        json={"header_row_index": 1, "categorized_columns": [], "metric_columns": [2]},
     )
     assert resp.status_code == 400
 
@@ -547,6 +552,6 @@ def test_dimension_column_overlapping_categorized_is_a_400(client):
     session_id = upload_body["session_id"]
     resp = client.post(
         f"/api/session/{session_id}/columns",
-        json={"header_row_index": 1, "categorized_columns": [0], "metric_column": 2, "dimension_columns": [0]},
+        json={"header_row_index": 1, "categorized_columns": [0], "metric_columns": [2], "dimension_columns": [0]},
     )
     assert resp.status_code == 400
