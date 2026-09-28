@@ -334,6 +334,52 @@
 
   .tree-toolbar-label { font-size: 13px; color: var(--ink-soft); margin-right: auto; align-self: center; }
 
+  /* ---------- "категория = папка" hint next to + Новая категория — same
+     compact/dismissible convention as upload.html's explainer-banner (see
+     README «Понятность для нечеловека-бухгалтера»), with a small STATIC
+     (non-interactive) tree illustration so the metaphor is shown, not just
+     described. ---------- */
+  .tree-hint {
+    position: relative;
+    background: rgba(22,167,107,0.06);
+    border: 1px solid rgba(22,167,107,0.22);
+    border-radius: 12px;
+    padding: 12px 34px 12px 14px;
+    margin-bottom: 14px;
+    font-size: 13px;
+    line-height: 1.45;
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .tree-hint .text { flex: 1; min-width: 220px; }
+  .tree-hint .text b { font-weight: 600; }
+  .tree-hint .tree-example {
+    background: #fff;
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 12px;
+    color: var(--ink-soft);
+    white-space: pre;
+    line-height: 1.5;
+  }
+  .tree-hint .dismiss {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: none;
+    border: none;
+    color: var(--ink-soft);
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 4px;
+    font-family: inherit;
+  }
+  .tree-hint .dismiss:hover { color: var(--ink); }
+
   /* ---------- Разбивка panel ---------- */
   .breakdown-section {
     background: #fff;
@@ -411,6 +457,13 @@
         <button class="btn-ghost hidden" id="breakdownBtn">Разбивка</button>
         <button class="btn-ghost" id="addRootBtn">+ Новая категория</button>
       </div>
+      <div class="tree-hint hidden" id="treeHint">
+        <span class="text"><b>Категория — это как папка на компьютере.</b> Хотите сгруппировать клиентов по менеджерам? Создайте категорию с именем менеджера, а клиентов добавьте внутрь как подкатегории — точно как кладёте файлы в папку.</span>
+        <pre class="tree-example mono">Иванова Мария
+  ├─ ООО Ромашка
+  └─ ИП Петров</pre>
+        <button class="dismiss" id="treeHintDismiss" title="Скрыть" aria-label="Скрыть подсказку">✕</button>
+      </div>
       <div class="tree" id="treeContainer"></div>
     </div>
   </div>
@@ -442,15 +495,15 @@
 <div class="reconcile-bar" id="reconcileBar">
   <div class="reconcile-item">
     <div class="reconcile-label">Итого по файлу</div>
-    <div class="reconcile-value mono" id="totalFile">0 ₽</div>
+    <div class="reconcile-value mono" id="totalFile">0</div>
   </div>
   <div class="reconcile-item">
     <div class="reconcile-label">По группам</div>
-    <div class="reconcile-value mono" id="totalGroups">0 ₽</div>
+    <div class="reconcile-value mono" id="totalGroups">0</div>
   </div>
   <div class="reconcile-item">
     <div class="reconcile-label">Не распределено</div>
-    <div class="reconcile-value mono unassigned" id="totalUnassigned">0 ₽</div>
+    <div class="reconcile-value mono unassigned" id="totalUnassigned">0</div>
   </div>
 </div>
 
@@ -479,6 +532,8 @@
   // column name, so switching tabs never loses another tab's progress.
   let categorizedColumns = [];   // ["Товар", "Клиент", ...], tab order
   let dimensionColumns = [];     // raw "разбивка" columns, no tree
+  let metricColumns = [];        // ["Стоимость", "Вес", ...] — one or more sums,
+                                  // reconciled/shown independently, see core/session.py
   let activeColumn = null;
   let columnState = {};          // column name -> per-column state (see freshColumnState)
 
@@ -519,10 +574,21 @@
     return path;
   }
 
-  function fmt(decimalString) {
+  // unit is the metric's own column NAME ("Стоимость", "Вес", ...), not a
+  // hardcoded currency sign — a session can sum more than one metric at
+  // once (see core/session.py) and not every metric is money.
+  function fmt(decimalString, unit) {
     const n = parseFloat(decimalString);
-    if (Number.isNaN(n)) return '0 ₽';
-    return n.toLocaleString('ru-RU', { maximumFractionDigits: 2 }) + ' ₽';
+    const numText = Number.isNaN(n) ? '0' : n.toLocaleString('ru-RU', { maximumFractionDigits: 2 });
+    return unit ? `${numText} ${unit}` : numText;
+  }
+
+  // Formats every chosen sum column side by side for one value (e.g. a
+  // group's total, or the whole file's total) — "45 000 Стоимость / 1 200
+  // Вес" — never just the first metric, never overwriting one with
+  // another (see README «Несколько сумм одновременно»).
+  function fmtAllMetrics(getValue) {
+    return metricColumns.map(m => fmt(getValue(m), m)).join(' / ');
   }
 
   // ---------- API calls ----------
@@ -559,6 +625,7 @@
     const info = await apiFetch(`/session/${encodeURIComponent(sessionId)}/columns`);
     categorizedColumns = info.categorized_columns;
     dimensionColumns = info.dimension_columns || [];
+    metricColumns = info.metric_columns || [];
     activeColumn = categorizedColumns[0];
   }
 
@@ -598,7 +665,21 @@
     }
     renderTabs();
     render();
+    maybeShowTreeHint();
   }
+
+  // ---------- "категория = папка" hint: shown once until dismissed (per
+  // browser, localStorage — wrapped in try/catch, same convention as
+  // upload.html's explainer banner). ----------
+  function maybeShowTreeHint() {
+    let dismissed = false;
+    try { dismissed = localStorage.getItem('gruper_tree_hint_dismissed') === '1'; } catch (e) {}
+    if (!dismissed) document.getElementById('treeHint').classList.remove('hidden');
+  }
+  document.getElementById('treeHintDismiss').addEventListener('click', () => {
+    document.getElementById('treeHint').classList.add('hidden');
+    try { localStorage.setItem('gruper_tree_hint_dismissed', '1'); } catch (e) {}
+  });
 
   function renderTabs() {
     const tabsEl = document.getElementById('treeTabs');
@@ -705,10 +786,12 @@
     });
   }
 
-  function groupTotal(groupId) {
+  function groupTotal(groupId, metric) {
     const state = cur();
-    if (!state.latestSummary) return 0;
-    return parseFloat(state.latestSummary.rollup_totals[groupId] || '0');
+    if (!state.latestSummary) return '0';
+    const perMetric = state.latestSummary.metrics[metric];
+    if (!perMetric) return '0';
+    return perMetric.rollup_totals[groupId] || '0';
   }
 
   function renderTree() {
@@ -772,7 +855,7 @@
     actions.className = 'tree-actions';
     const total = document.createElement('span');
     total.className = 'tree-total mono';
-    total.textContent = fmt(groupTotal(g.id));
+    total.textContent = fmtAllMetrics(m => groupTotal(g.id, m));
     const addSubBtn = document.createElement('button');
     addSubBtn.className = 'icon-btn';
     addSubBtn.dataset.action = 'add-sub';
@@ -816,12 +899,17 @@
   function renderReconciliation() {
     const summary = cur().latestSummary;
     if (!summary) return;
-    document.getElementById('totalFile').textContent = fmt(summary.grand_total);
-    const groupsTotal = parseFloat(summary.grand_total) - parseFloat(summary.unassigned_total);
-    document.getElementById('totalGroups').textContent = fmt(String(groupsTotal));
+    document.getElementById('totalFile').textContent = fmtAllMetrics(m => summary.metrics[m].grand_total);
+    document.getElementById('totalGroups').textContent = fmtAllMetrics(m => {
+      const perMetric = summary.metrics[m];
+      return String(parseFloat(perMetric.grand_total) - parseFloat(perMetric.unassigned_total));
+    });
     const unassignedEl = document.getElementById('totalUnassigned');
-    unassignedEl.textContent = fmt(summary.unassigned_total);
-    unassignedEl.classList.toggle('zero', parseFloat(summary.unassigned_total) === 0);
+    unassignedEl.textContent = fmtAllMetrics(m => summary.metrics[m].unassigned_total);
+    // "сошлось" (green) only once EVERY metric's unassigned total is
+    // zero — a session with 2 sums isn't done until both reconcile.
+    const allZero = metricColumns.every(m => parseFloat(summary.metrics[m].unassigned_total) === 0);
+    unassignedEl.classList.toggle('zero', allZero);
   }
 
   // ---------- Разбивка (dimension columns x this tree's category path) ----------
@@ -852,9 +940,10 @@
       return;
     }
     // Column order comes straight from the server (dimension columns,
-    // then this tree's "Группа N" path columns, then "Сумма") — see
-    // core/export.py::build_breakdown_sheet. JSON object key order in a
-    // fetch() response preserves that.
+    // then this tree's "Группа N" path columns, then one column PER
+    // metric, named by the metric's own column name — e.g. "Стоимость",
+    // "Вес" — see backend/main.py::get_breakdown). JSON object key order
+    // in a fetch() response preserves that.
     const cols = Object.keys(rows[0]);
     const thead = document.createElement('tr');
     cols.forEach(c => {
@@ -867,7 +956,7 @@
       const tr = document.createElement('tr');
       cols.forEach(c => {
         const td = document.createElement('td');
-        if (c === 'Сумма') { td.className = 'mono'; td.textContent = fmt(r[c]); }
+        if (metricColumns.includes(c)) { td.className = 'mono'; td.textContent = fmt(r[c]); }
         else { td.textContent = (r[c] === null || r[c] === undefined) ? '' : String(r[c]); }
         tr.appendChild(td);
       });

@@ -176,6 +176,39 @@
 
   .table-hint { padding: 12px 14px; font-size: 12.5px; color: var(--ink-soft); border-top: 1px solid var(--rule-light); background: var(--paper-raised); }
 
+  /* ---------- Explainer banner: "категория = папка" — compact, one-time,
+     dismissible (see README «Понятность для нечеловека-бухгалтера»). Not
+     a modal/tour — just a quiet line above the table that goes away once
+     read, so it never gets in the way of the already-working screen. ---------- */
+  .explainer-banner {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    background: rgba(76,111,255,0.06);
+    border: 1px solid rgba(76,111,255,0.22);
+    border-radius: 12px;
+    padding: 12px 14px;
+    margin-bottom: 16px;
+    font-size: 13px;
+    color: var(--ink);
+    line-height: 1.45;
+  }
+  .explainer-banner .icon { flex-shrink: 0; font-size: 15px; line-height: 1.3; }
+  .explainer-banner .text { flex: 1; }
+  .explainer-banner .text b { font-weight: 600; }
+  .explainer-banner .dismiss {
+    flex-shrink: 0;
+    background: none;
+    border: none;
+    color: var(--ink-soft);
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 2px;
+    font-family: inherit;
+  }
+  .explainer-banner .dismiss:hover { color: var(--ink); }
+
   /* ---------- Sticky continue bar ---------- */
   .continue-bar {
     position: fixed;
@@ -270,6 +303,12 @@
       <select id="projectSelect" style="padding: 9px 12px; border: 1px solid var(--rule); border-radius: 9px; font-family: inherit; font-size: 13.5px; background: #fff; min-width: 280px;">
         <option value="">Новый проект (без сохранённого словаря)</option>
       </select>
+    </div>
+
+    <div class="explainer-banner hidden" id="explainerBanner">
+      <span class="icon">📁</span>
+      <span class="text"><b>Категория — как папка:</b> можно вкладывать одну в другую сколько угодно раз. «Сумма» можно выбрать не одну, а сразу несколько (например, и рубли, и килограммы).</span>
+      <button class="dismiss" id="explainerDismiss" title="Скрыть" aria-label="Скрыть подсказку">✕</button>
     </div>
 
     <div class="preview-card">
@@ -405,7 +444,21 @@
 
     render();
     maybeShowProjectPicker();
+    maybeShowExplainerBanner();
   }
+
+  // ---------- Explainer banner: shown once until dismissed (per browser,
+  // localStorage — see README, wrapped in try/catch since a private
+  // window or blocked site data can make storage throw). ----------
+  function maybeShowExplainerBanner() {
+    let dismissed = false;
+    try { dismissed = localStorage.getItem('gruper_explainer_dismissed') === '1'; } catch (e) {}
+    if (!dismissed) document.getElementById('explainerBanner').classList.remove('hidden');
+  }
+  document.getElementById('explainerDismiss').addEventListener('click', () => {
+    document.getElementById('explainerBanner').classList.add('hidden');
+    try { localStorage.setItem('gruper_explainer_dismissed', '1'); } catch (e) {}
+  });
 
   // ---------- Project picker: only shown if the browser is already
   // identified (GET /api/projects returns 200) AND has at least one saved
@@ -568,11 +621,10 @@
   }
 
   function setColumnRole(colIdx, role) {
-    if (role === 'metric') {
-      // metric is singular — picking it here clears it from wherever it
-      // was before (categorize/dimension stay multi-valued, no such clear).
-      columnRoles = columnRoles.map(r => r === 'metric' ? null : r);
-    }
+    // 'metric' ("Это сумма") is now multi-valued too — a user can pick
+    // several sum columns at once (e.g. "Стоимость" AND "Вес"), reconciled
+    // independently (see core/session.py). Same behavior as categorize/
+    // dimension: no clearing of any other column's role here.
     columnRoles[colIdx] = role;
     openMenuColIdx = null;
     render();
@@ -621,7 +673,7 @@
     }
 
     if (metricIdx.length) {
-      metricVal.textContent = nameOf(metricIdx[0]);
+      metricVal.textContent = metricIdx.map(nameOf).join(', ');
       metricVal.classList.remove('placeholder');
       metricChip.classList.add('done');
     } else {
@@ -632,12 +684,12 @@
 
     const status = document.getElementById('continueStatus');
     const btn = document.getElementById('continueBtn');
-    if (categorizeIdx.length >= 1 && metricIdx.length === 1) {
+    if (categorizeIdx.length >= 1 && metricIdx.length >= 1) {
       const dataRows = totalRowCount - 1 - headerRowIndex;
-      status.innerHTML = `Деревьев: <span class="mono">${categorizeIdx.length}</span> · строк данных: <span class="mono">${dataRows}</span>`;
+      status.innerHTML = `Деревьев: <span class="mono">${categorizeIdx.length}</span> · сумм: <span class="mono">${metricIdx.length}</span> · строк данных: <span class="mono">${dataRows}</span>`;
       btn.classList.remove('is-disabled');
     } else {
-      status.textContent = 'Выберите минимум 1 колонку «категоризировать» и колонку «сумма»';
+      status.textContent = 'Выберите минимум 1 колонку «категоризировать» и минимум 1 колонку «сумма»';
       btn.classList.add('is-disabled');
     }
   }
@@ -647,7 +699,7 @@
     const categorizeIdx = columnsWithRole('categorize');
     const dimensionIdx = columnsWithRole('dimension');
     const metricIdx = columnsWithRole('metric');
-    if (categorizeIdx.length < 1 || metricIdx.length !== 1 || !sessionId) return;
+    if (categorizeIdx.length < 1 || metricIdx.length < 1 || !sessionId) return;
     const btn = document.getElementById('continueBtn');
     btn.classList.add('is-disabled');
     btn.textContent = 'Сохраняем…';
@@ -660,7 +712,7 @@
         body: JSON.stringify({
           header_row_index: headerRowIndex,
           categorized_columns: categorizeIdx,
-          metric_column: metricIdx[0],
+          metric_columns: metricIdx,
           dimension_columns: dimensionIdx,
         }),
       });
